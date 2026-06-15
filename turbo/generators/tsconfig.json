@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tooling/typescript/base.json",
+  "compilerOptions": {
+    /** The generator test file is a tsx-runnable ESM module that
+     *  uses `import.meta.url` and explicitly imports sibling .ts
+     *  files. Override the base "Preserve"/"Bundler" config so
+     *  tsc accepts both. (tsc is only used here for static
+     *  typechecking; the test itself runs under `tsx --test`,
+     *  which is unaffected by these overrides.) */
+    "module": "esnext",
+    "allowImportingTsExtensions": true,
+    "tsBuildInfoFile": "./.cache/tsbuildinfo.json"
+  },
+  "include": ["config.ts", "config.test.ts"],
+  "exclude": ["node_modules", "templates"]
+}

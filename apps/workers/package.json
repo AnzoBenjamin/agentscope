@@ -1,0 +1,29 @@
+{
+  "name": "@agentscope/workers",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "dev": "pnpm with-env tsx watch src/index.ts",
+    "start": "pnpm with-env tsx src/index.ts",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "with-env": "dotenv -e ../../.env --"
+  },
+  "dependencies": {
+    "@agentscope/agents": "workspace:*",
+    "@agentscope/db": "workspace:*",
+    "@agentscope/observability": "workspace:*",
+    "@agentscope/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentscope/eslint-config": "workspace:*",
+    "@agentscope/prettier-config": "workspace:*",
+    "@agentscope/tsconfig": "workspace:*",
+    "dotenv-cli": "^10.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "catalog:"
+  },
+  "prettier": "@agentscope/prettier-config"
+}

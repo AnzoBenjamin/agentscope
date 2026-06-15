@@ -1,0 +1,38 @@
+flowchart LR
+  user[User]
+  web[Next.js Web App]
+  api[tRPC API]
+  auth[Better Auth]
+  queue[(agent_run Queue)]
+  worker[AgentScope Worker]
+  runtime[Agent Runtime]
+  investigator[Splunk AI Investigator]
+  telemetry[Telemetry Package]
+  db[(Postgres)]
+  hec[Splunk HEC]
+  splunk[(Splunk Enterprise)]
+  mcp[Splunk MCP Server]
+  llm[AI Model via Vercel AI SDK]
+
+  user --> web
+  web --> api
+  api --> auth
+  api --> queue
+  queue --> worker
+  worker --> runtime
+
+  runtime --> llm
+  runtime --> telemetry
+  telemetry --> db
+  telemetry --> hec
+  hec --> splunk
+
+  worker --> investigator
+  investigator --> mcp
+  mcp --> splunk
+  investigator --> llm
+  investigator --> telemetry
+
+  db --> web
+  splunk --> investigator
+  investigator --> web

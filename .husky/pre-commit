@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# .husky/pre-commit
+#
+# Runs before every commit. Two fast guards:
+#   1. scripts/check-namespace.sh - fails on any @acme/ reference
+#   2. pnpm test:generators      - fails on a generator template drift
+#
+# Both are < 500ms combined. Skip with `git commit --no-verify` if
+# you need to commit a WIP (then re-run both guards before pushing).
+#
+# `set -e` is required so a failure in the first guard cannot be
+# masked by a successful second guard (POSIX sh does not exit on
+# error by default).
+
+set -e
+scripts/check-namespace.sh
+pnpm test:generators

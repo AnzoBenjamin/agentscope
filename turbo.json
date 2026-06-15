@@ -1,0 +1,115 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "ui": "tui",
+  "tasks": {
+    "topo": {
+      "dependsOn": ["^topo"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".cache/tsbuildinfo.json", "dist/**"]
+    },
+    "dev": {
+      "dependsOn": ["^dev"],
+      "cache": false,
+      "persistent": false
+    },
+    "format": {
+      "outputs": [".cache/.prettiercache"],
+      "outputLogs": "new-only"
+    },
+    "lint": {
+      "dependsOn": ["^topo", "^build"],
+      "outputs": [".cache/.eslintcache"]
+    },
+    "typecheck": {
+      "dependsOn": ["^topo", "^build"],
+      "outputs": [".cache/tsbuildinfo.json"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "clean": {
+      "cache": false
+    },
+    "//#clean": {
+      "cache": false
+    },
+    "generate": {
+      "cache": false,
+      "outputs": ["drizzle/**"]
+    },
+    "migrate": {
+      "cache": false
+    },
+    "push": {
+      "cache": false,
+      "interactive": true
+    },
+    "studio": {
+      "cache": false,
+      "persistent": true
+    },
+    "ui-add": {
+      "cache": false,
+      "interactive": true
+    }
+  },
+  "globalEnv": [
+    "POSTGRES_URL",
+    "NEXT_PUBLIC_APP_URL",
+    "APP_URL",
+    "AUTH_DISCORD_ID",
+    "AUTH_DISCORD_SECRET",
+    "AUTH_REDIRECT_PROXY_URL",
+    "AUTH_SECRET",
+    "RESEND_API_KEY",
+    "RESEND_FROM",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "STRIPE_PRICE_STARTER",
+    "STRIPE_PRICE_GROWTH",
+    "STRIPE_PRICE_ENTERPRISE",
+    "PORT",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "SPLUNK_HEC_URL",
+    "SPLUNK_HEC_TOKEN",
+    "SPLUNK_SEARCH_URL",
+    "SPLUNK_URL",
+    "SPLUNK_TOKEN",
+    "SPLUNK_INDEX",
+    "SPLUNK_USER",
+    "SPLUNK_PASSWORD",
+    "SPLUNK_MCP_COMMAND",
+    "SPLUNK_MCP_ENABLED",
+    "SPLUNK_ANOMALY_URL",
+    "SPLUNK_ANOMALY_USER",
+    "SPLUNK_ANOMALY_PASSWORD",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "AGENTSCOPE_WORKER_ID",
+    "AGENTSCOPE_WORKER_POLL_MS",
+    "AGENTSCOPE_OPERATIONAL_ALERT_POLL_MS",
+    "AGENTSCOPE_ALERT_COOLDOWN_MS",
+    "AGENTSCOPE_AGENT_RUN_REAP_MS",
+    "AGENTSCOPE_TELEMETRY_OUTBOX_POLL_MS",
+    "AGENTSCOPE_TELEMETRY_OUTBOX_REAP_MS",
+    "AGENTSCOPE_SCHEDULE_POLL_MS",
+    "AGENTSCOPE_METRICS_PORT",
+    "AGENTSCOPE_SERVICE_NAME",
+    "LOG_LEVEL",
+    "SENTRY_DSN",
+    "SENTRY_TRACES_SAMPLE_RATE",
+    "SENTRY_RELEASE"
+  ],
+  "globalPassThroughEnv": [
+    "NODE_ENV",
+    "CI",
+    "VERCEL",
+    "VERCEL_ENV",
+    "VERCEL_URL",
+    "npm_lifecycle_event"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@agentscope/auth",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./middleware": "./src/middleware.ts",
+    "./client": "./src/client.ts",
+    "./env": "./env.ts",
+    "./secrets": "./src/secrets.ts"
+  },
+  "license": "MIT",
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "format": "prettier --check . --ignore-path ../../.gitignore",
+    "lint": "eslint --flag unstable_native_nodejs_ts_config",
+    "generate": "dotenv -e ../../.env -- pnpx @better-auth/cli generate --config script/auth-cli.ts --output ../db/src/auth-schema.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentscope/db": "workspace:*",
+    "@agentscope/observability": "workspace:*",
+    "@t3-oss/env-core": "^0.13.8",
+    "better-auth": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@agentscope/eslint-config": "workspace:*",
+    "@agentscope/prettier-config": "workspace:*",
+    "@agentscope/tsconfig": "workspace:*",
+    "@better-auth/cli": "catalog:",
+    "eslint": "catalog:",
+    "prettier": "catalog:",
+    "typescript": "catalog:"
+  },
+  "prettier": "@agentscope/prettier-config"
+}

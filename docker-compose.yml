@@ -1,0 +1,89 @@
+# ─── AgentScope Local Development ────────────────────────────
+#
+# Start everything with:
+#   docker compose up -d
+#
+# Check Splunk status:
+#   docker compose logs -f splunk      # wait for "Ansible playbook complete"
+#   ./scripts/splunk-setup.sh          # create HEC token
+
+services:
+  # PostgreSQL — primary datastore
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: agentscope
+      POSTGRES_PASSWORD: agentscope
+      POSTGRES_DB: agentscope
+    ports:
+      # Host 5432 is occupied by a system-wide PostgreSQL; map container 5432
+      # to host 5433 instead. Update POSTGRES_URL accordingly.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentscope"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Splunk Enterprise — observability & anomaly detection
+  splunk:
+    image: splunk/splunk:latest
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: agentscope123
+      SPLUNK_HEC_TOKEN: agentscope-hec-token-abc123
+      SPLUNK_APPS_URL: ""
+    ports:
+      - "8000:8000"   # Splunk Web UI (admin / agentscope123)
+      - "8088:8088"   # HTTP Event Collector (HEC)
+      - "8089:8089"   # Management API (REST + MCP Server)
+    volumes:
+      - splunk-etc:/opt/splunk/etc
+      - splunk-var:/opt/splunk/var
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsk -u admin:agentscope123 https://localhost:8089/services/server/info | grep -q 'serverName' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 30
+      start_period: 360s
+
+  # AgentScope worker — claims and executes queued agent runs, drives the
+  # Splunk MCP investigator, and exposes /metrics + /healthz. Bringing
+  # the worker up alongside postgres + splunk gives you the full dev
+  # stack in a single `docker compose up -d`.
+  #
+  # You can also run the worker on the host via `pnpm dev:worker` if you
+  # want faster iteration on worker code; the two paths are equivalent.
+  workers:
+    build:
+      context: .
+      dockerfile: apps/workers/Dockerfile
+    env_file: .env
+    environment:
+      # Inside the docker network, postgres and splunk are reachable by
+      # service name. The worker's `pnpm start` reads POSTGRES_URL and
+      # SPLUNK_URL from the environment, so we override them here rather
+      # than asking the user to maintain a second .env file.
+      POSTGRES_URL: postgresql://agentscope:agentscope@postgres:5432/agentscope
+      SPLUNK_URL: http://splunk:8089
+      SPLUNK_HEC_URL: http://splunk:8088/services/collector/event
+      SPLUNK_VERIFY_SSL: "false"
+      SPLUNK_USER: admin
+      SPLUNK_PASSWORD: agentscope123
+      SPLUNK_ANOMALY_URL: http://splunk:8089/services/search/jobs
+      SPLUNK_ANOMALY_USER: admin
+      SPLUNK_ANOMALY_PASSWORD: agentscope123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      splunk:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  splunk-etc:
+  splunk-var:

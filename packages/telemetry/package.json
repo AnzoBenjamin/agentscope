@@ -1,0 +1,41 @@
+{
+  "name": "@agentscope/telemetry",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "dev": "tsc",
+    "format": "prettier --check . --ignore-path ../../.gitignore",
+    "lint": "eslint --flag unstable_native_nodejs_ts_config",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+  },
+  "dependencies": {
+    "@agentscope/db": "workspace:*",
+    "@agentscope/observability": "workspace:*",
+    "zod": "catalog:"
+  },
+  "optionalDependencies": {
+    "@agentscope/eslint-config": "workspace:*",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.57.0",
+    "@opentelemetry/sdk-trace-node": "^1.30.0",
+    "ai": "^5.0.0"
+  },
+  "devDependencies": {
+    "@agentscope/prettier-config": "workspace:*",
+    "@agentscope/tsconfig": "workspace:*",
+    "eslint": "catalog:",
+    "prettier": "catalog:",
+    "tsx": "^4.22.4",
+    "typescript": "catalog:"
+  },
+  "prettier": "@agentscope/prettier-config"
+}
