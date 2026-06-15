@@ -180,11 +180,16 @@ void test("redactValue recurses into nested objects and arrays", () => {
   const redacted = redact(input);
   // `noUncheckedIndexedAccess` makes `runs[0]` `T | undefined` at the
   // type level. The runtime is fine (the test data has two entries),
-  // and the asserts below prove it — so the `!` is honest. A `?.`
-  // here would silently turn the asserts into no-ops, which is worse.
-  const run0 = redacted.runs[0]!;
-  const run1 = redacted.runs[1]!;
+  // and the asserts below prove it. We use `assert.ok` as a runtime
+  // guard (the linter forbids `!`); the assertion signature narrows
+  // `run0`/`run1` to known-defined for the subsequent property access,
+  // and a missing entry fails with a clear AssertionError rather than
+  // a confusing `Cannot read properties of undefined`.
+  const run0 = redacted.runs[0];
+  const run1 = redacted.runs[1];
   const owner = redacted.meta.owner;
+  assert.ok(run0, "expected runs[0] to be defined");
+  assert.ok(run1, "expected runs[1] to be defined");
   assert.equal(run0.apiKey, "[redacted]");
   assert.equal(run0.tokens, 100);
   assert.equal(run1.apiKey, "[redacted]");

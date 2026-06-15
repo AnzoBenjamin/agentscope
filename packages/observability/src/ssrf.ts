@@ -146,17 +146,16 @@ export function isBlockedHostname(hostname: string): boolean {
 function extractEmbeddedIpv4(address: string): string | null {
   // IPv4-mapped: the `ffff` marker is the tell. Accept both the
   // shorthand `::ffff:` and the full form `0:0:0:0:0:ffff:`.
-  const mappedMatch = address.match(
-    /^(?:::ffff:|0+:0+:0+:0+:0+:ffff:)(.+)$/i,
-  );
-  if (mappedMatch && mappedMatch[1] !== undefined) {
+  const mappedMatch =
+    /^(?:::ffff:|0+:0+:0+:0+:0+:ffff:)(.+)$/i.exec(address);
+  if (mappedMatch?.[1] !== undefined) {
     return parseEmbeddedTail(mappedMatch[1]);
   }
 
   // IPv4-compatible: 6 leading zero segments. The shorthand `::`
   // expands to 6 zeros + whatever follows.
-  const compatibleMatch = address.match(/^(?:::|0+:0+:0+:0+:0+:0+:)(.+)$/);
-  if (compatibleMatch && compatibleMatch[1] !== undefined) {
+  const compatibleMatch = /^(?:::|0+:0+:0+:0+:0+:0+:)(.+)$/.exec(address);
+  if (compatibleMatch?.[1] !== undefined) {
     return parseEmbeddedTail(compatibleMatch[1]);
   }
 
@@ -171,8 +170,8 @@ function extractEmbeddedIpv4(address: string): string | null {
 function parseEmbeddedTail(tail: string): string | null {
   if (isIPv4(tail)) return tail;
 
-  const hexMatch = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  if (hexMatch && hexMatch[1] !== undefined && hexMatch[2] !== undefined) {
+  const hexMatch = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
+  if (hexMatch?.[1] !== undefined && hexMatch[2] !== undefined) {
     const high = parseInt(hexMatch[1], 16);
     const low = parseInt(hexMatch[2], 16);
     if (
