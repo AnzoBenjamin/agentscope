@@ -112,7 +112,12 @@ export interface WorkerHealth {
 export const splunkRouter = {
   health: protectedProcedure.query(async () => {
     const hec = await checkSplunkHecHealth();
-    const directSearch = {
+    let directSearch: {
+      configured: boolean;
+      url: string;
+      ok: boolean;
+      error: string | undefined;
+    } = {
       configured: !!SPLUNK_PASSWORD,
       url: SPLUNK_SEARCH_URL,
       ok: !!SPLUNK_PASSWORD,
@@ -120,6 +125,58 @@ export const splunkRouter = {
         ? undefined
         : "SPLUNK_PASSWORD is required for direct management API searches.",
     };
+
+    // The dashboard's "Direct search" readiness tile used to report
+    // `ok: true` based purely on the presence of `SPLUNK_PASSWORD`,
+    // which meant a misconfigured `SPLUNK_SEARCH_URL` (wrong host,
+    // expired cert, auth method rejected) would still show the tile
+    // as green. Probe `/services/auth/login` once with the configured
+    // creds and report the real status. The probe is best-effort: if
+    // the request throws, we keep the conservative `ok: false` from
+    // the password-presence check (and surface the error to the UI).
+    //
+    // `/services/auth/login` is Splunk's pre-auth session endpoint:
+    // it does NOT accept a Basic auth header (the credentials are
+    // posted in the form body, and Splunk returns a session key).
+    // Sending only `Authorization: Basic ...` with an empty form body
+    // causes Splunk to 400 the request, which would flip every
+    // working deployment's tile from green to red. The correct shape
+    // is form-encoded `username` and `password`.
+    if (SPLUNK_PASSWORD) {
+      try {
+        const probeUrl = SPLUNK_SEARCH_URL.replace(
+          /\/services\/search\/jobs\/?$/,
+          "/services/auth/login",
+        );
+        const probeRes = await fetch(`${probeUrl}?output_mode=json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            username: SPLUNK_USER,
+            password: SPLUNK_PASSWORD,
+          }).toString(),
+          signal: AbortSignal.timeout(3000),
+        });
+        directSearch = {
+          ...directSearch,
+          ok: probeRes.ok,
+          error: probeRes.ok
+            ? undefined
+            : `Splunk auth login returned ${probeRes.status}`,
+        };
+      } catch (error) {
+        directSearch = {
+          ...directSearch,
+          ok: false,
+          error:
+            error instanceof Error
+              ? `Splunk probe failed: ${error.message}`
+              : "Splunk probe failed.",
+        };
+      }
+    }
 
     // The dashboard's "MCP-enabled" badge is driven by the worker's
     // live connection state, not by a static config flag or a probe from

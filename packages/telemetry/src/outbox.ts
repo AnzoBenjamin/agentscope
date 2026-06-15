@@ -94,13 +94,22 @@ export async function reapStaleTelemetryOutbox(
     Date.now() - (options.staleAfterMs ?? 5 * 60 * 1000),
   );
 
+  // Preserve the original `runAfter` (or push it out 5 minutes if the
+  // reaper found a row with no scheduled retry). The previous
+  // implementation reset `runAfter` to `new Date()`, which meant a
+  // reaped event was eligible for immediate re-delivery on the next
+  // poll — a tight retry loop if the underlying transport (e.g.
+  // Splunk HEC) is genuinely down. We use SQL `GREATEST` so that
+  // existing `runAfter` in the future is preserved, but a reaped row
+  // with no schedule (or a past schedule) is parked for at least
+  // 5 minutes before the next attempt.
   const updated = await db
     .update(TelemetryOutbox)
     .set({
       status: "Failed",
       lockedAt: null,
       lockedBy: null,
-      runAfter: new Date(),
+      runAfter: sql`greatest(${TelemetryOutbox.runAfter}, now() + interval '5 minutes')`,
       lastError: "Telemetry outbox delivery lock expired.",
       updatedAt: new Date(),
     })

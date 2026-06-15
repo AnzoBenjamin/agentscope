@@ -33,6 +33,13 @@ export const env = createEnv({
     NODE_ENV: process.env.NODE_ENV,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
   },
-  skipValidation:
-    !!process.env.CI || process.env.npm_lifecycle_event === "lint",
+  // The `lint` lifecycle event runs against the build tree where many
+  // env vars are unset, so the schema can't resolve and would fail
+  // the lint job for unrelated reasons. We do NOT skip in CI: a
+  // missing `POSTGRES_URL` should fail the build server check, not
+  // silently propagate to production. The original t3-env scaffold
+  // skipped both `CI` and `lint`; the CI branch was a misconfiguration
+  // that masked a recurring production deploy bug (see code review,
+  // June 2026).
+  skipValidation: process.env.npm_lifecycle_event === "lint",
 });

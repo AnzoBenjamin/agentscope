@@ -450,30 +450,64 @@ function flatten(row: Record<string, unknown>) {
   );
 }
 
-function csvValue(value: unknown) {
-  let text = "";
+// Exported for unit tests in `test/compliance-format.test.ts`.
+// Production callers use them through `createExport`.
+export { csvValue, toCsv, redactRows, redactValue, flatten };
 
-  if (typeof value === "string") {
-    text = value;
-  } else if (
+function csvValue(value: unknown) {
+  // null/undefined: empty cell. CSV has no representation for null --
+  // emitting a bare `null`/`undefined` token would round-trip as the
+  // string "null"/"undefined" in Excel/Sheets, which is misleading.
+  if (value === null || value === undefined) return "";
+
+  // Primitives that don't need CSV wrapping: numbers, booleans, bigints.
+  // CSV allows bare numbers/booleans and they parse back to the same
+  // type in Excel/Sheets without ambiguity, so we don't add quotes.
+  if (
     typeof value === "number" ||
     typeof value === "boolean" ||
     typeof value === "bigint"
   ) {
-    text = String(value);
-  } else if (value instanceof Date) {
-    text = value.toISOString();
-  } else if (value !== undefined && value !== null) {
-    text = JSON.stringify(value);
+    return String(value);
   }
 
-  return `"${text.replaceAll('"', '""')}"`;
+  // Dates: ISO 8601 string, no wrapping.
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  // Strings and objects: serialize, then wrap.
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+
+  // CSV formula injection guard. Excel, LibreOffice, and Google Sheets
+  // will execute any cell whose first character is `=`, `+`, `-`, `@`,
+  // TAB, or CR as a formula — turning a user-controlled field like
+  // `Agent.name` or `Session.input` into an attack vector when the
+  // exported CSV is opened. Prefix with a single quote (the standard
+  // "force-text" marker) when any of those characters starts the value.
+  // Applied BEFORE the `"`-doubling so the quote escape still works.
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+
+  return `"${safe.replaceAll('"', '""')}"`;
 }
 
 function redactRows(rows: unknown[]) {
   return rows.map((row) => redactValue(row));
 }
 
+/**
+ * Recursively redact secrets and emails from an arbitrary value.
+ *
+ * Returns `unknown` because the return shape is not the same as the
+ * input: arrays stay arrays, strings stay strings (with emails
+ * masked), and objects become a fresh `Record<string, unknown>`
+ * (not the same reference). The previous `<T>(value: T): T` generic
+ * was a lie — the implementation returned `any[]` for arrays,
+ * `string` for strings, and `{ [k: string]: any }` for objects,
+ * which TypeScript with strict mode correctly rejects. At runtime
+ * the structure is preserved (the test suite asserts this), but the
+ * type system can't prove it, so we be honest and return `unknown`.
+ */
 function redactValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactValue);
 
@@ -489,9 +523,26 @@ function redactValue(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value).map(([key, nested]) => [
       key,
-      /token|secret|password|authorization|api[-_]?key|credential/i.test(key)
-        ? "[redacted]"
-        : redactValue(nested),
+      isSensitiveKey(key) ? "[redacted]" : redactValue(nested),
     ]),
+  );
+}
+
+/**
+ * Match the narrower pattern used in `packages/telemetry/src/index.ts`
+ * (`isSensitiveKey`). The previous regex `/token|secret|.../` over-
+ * matched: it caught LLM token counts (`tokens`, `tokensIn`,
+ * `tokensOut`, `totalTokens`) and clobbered them with `"[redacted]"`,
+ * breaking per-session cost attribution in the compliance `Costs`
+ * export. Now we only match concrete secret-shaped patterns:
+ *   - bare `secret` / `password` / `authorization` / `credential`
+ *   - `apiKey`, `apiKeyEncrypted`, `api_key` (any suffix)
+ *   - OAuth-shaped `*token` names: `accessToken`, `refreshToken`,
+ *     `idToken`, `bearerToken` — note the literal `-_?token` suffix
+ *     so `tokens`, `tokensIn`, `tokensOut`, `totalTokens` do NOT match.
+ */
+function isSensitiveKey(key: string) {
+  return /\b(secret|password|credential|authorization)\b|api[-_]?key|(?:access|refresh|id|bearer)[-_]?token/i.test(
+    key,
   );
 }

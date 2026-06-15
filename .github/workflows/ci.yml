@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a previous run of the same branch when a new commit lands.
+# Saves 3-5 minutes of CI per push for active branches.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # CI must validate env vars (see apps/nextjs/src/env.ts and
+      # packages/auth/env.ts). Set the minimum required values so the
+      # t3-env schema can resolve, otherwise `pnpm typecheck` will
+      # fail with a misleading "missing env var" error. Real credentials
+      # come from secrets in a deploy job, not here.
+      POSTGRES_URL: postgresql://agentscope:agentscope@localhost:5432/agentscope
+      AUTH_SECRET: ci-only-do-not-use-in-prod-00000000000000000000000000000000
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Namespace check (no @acme/ references)
+        run: bash scripts/check-namespace.sh
+
+      - name: Env placeholder check
+        run: bash scripts/check-env-placeholders.sh
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

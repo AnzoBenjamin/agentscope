@@ -1,0 +1,9 @@
+# AgentScope — Submission Blurb
+
+AgentScope is the operations plane for AI employees: a control plane that queues agent work, a black box recorder that captures every model call and tool invocation, and an incident investigator that uses the **Splunk MCP Server** to search its own telemetry and produce a risk-graded operations report. Submitted to the **Observability** track, AgentScope is built around a single bet — AI agents need the same audit, replay, and incident-response workflows that services, jobs, and human operators already have, and Splunk is the place to put that data.
+
+The end-to-end flow: a queued agent run → worker → agent runtime → telemetry package → Postgres + Splunk HEC → Splunk MCP search → risk-graded investigation report → session replay in the web UI. Every `ModelInvoked`, `ToolCalled`, `CostRecorded`, and `SessionCompleted` event is forwarded to Splunk HEC into the `agentscope:event` sourcetype. The Splunk AI Investigator then spawns the Splunk MCP Server over stdio and runs an SPL search against the same data, closing the loop inside Splunk rather than bolting a sidecar dashboard on top.
+
+The dashboard shows the live event stream, the investigation summary, the rendered SPL query, per-agent cost trends, and the Splunk readiness panel (HEC health, MCP connection state, telemetry outbox depth). Operators can replay any session, see the exact model and tool calls the agent made, and audit every destructive mutation through a hash-chained log.
+
+The repo ships with a docker-compose for Postgres and Splunk, a per-agent encrypted key store, a retry queue with backoff, a per-session cost guardrail, RBAC enforced on every tRPC procedure, CSV/JSON compliance exports with PII redaction, and email/webhook alert policies. It is not a mockup of a Splunk integration — it calls Splunk capabilities at runtime to do the work the product promises.

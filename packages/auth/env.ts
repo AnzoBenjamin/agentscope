@@ -21,7 +21,10 @@ export function authEnv() {
       NODE_ENV: z.enum(["development", "production"]).optional(),
     },
     runtimeEnv: process.env,
-    skipValidation:
-      !!process.env.CI || process.env.npm_lifecycle_event === "lint",
+    // Skip only on `lint` — the build tree lacks most env vars, which
+    // is unrelated to a real env-validation failure. CI must still
+    // validate: a missing `AUTH_SECRET` should fail the build server
+    // check, not silently propagate to production.
+    skipValidation: process.env.npm_lifecycle_event === "lint",
   });
 }

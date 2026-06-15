@@ -280,15 +280,41 @@ export const agentRouter = {
 
   delete: requireRole("Manager")
     .input(z.string())
-    .mutation(({ ctx, input }) => {
-      return ctx.db
+    .mutation(async ({ ctx, input }) => {
+      const [deleted] = await ctx.db
         .delete(Agent)
         .where(
           and(
             eq(Agent.id, input),
             eq(Agent.organizationId, ctx.organizationId),
           ),
-        );
+        )
+        .returning();
+
+      if (deleted) {
+        // Audit log the destruction. The previous implementation
+        // skipped this, which meant a malicious manager could delete
+        // an agent and leave no compliance trail. Other destructive
+        // mutations in this router (and in `schedule`, `costBudget`,
+        // `alerts`, `security`) all call `writeAuditLog` — this
+        // brings `agent.delete` in line with them.
+        await writeAuditLog({
+          db: ctx.db,
+          organizationId: ctx.organizationId,
+          actorUserId: ctx.session.user.id,
+          action: "agent.delete",
+          resourceType: "agent",
+          resourceId: deleted.id,
+          payload: {
+            name: deleted.name,
+            type: deleted.type,
+            modelProvider: deleted.modelProvider,
+            modelName: deleted.modelName,
+          },
+        });
+      }
+
+      return deleted;
     }),
 
   versions: requireRole("Viewer")

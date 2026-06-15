@@ -12,6 +12,30 @@ import {
 
 import { writeAuditLog } from "../audit";
 import { requireRole } from "../trpc";
+import { validateWebhookTarget } from "@agentscope/observability";
+
+/**
+ * Webhook target schema. The `.refine` runs `validateWebhookTarget`
+ * which:
+ *   1. Requires http(s) (https in production)
+ *   2. Rejects loopback, private, link-local, and CGN addresses
+ *   3. Rejects non-DNS hostnames
+ *
+ * This is the first line of defense against SSRF — a malicious admin
+ * in an org could otherwise point the webhook at the AWS metadata
+ * service (`http://169.254.169.254/...`) or an internal HTTP service.
+ * `sendWebhook` in `packages/agents/src/alerts.ts` re-validates as
+ * defense in depth.
+ */
+const webhookTargetSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(2048)
+  .refine(
+    (value) => validateWebhookTarget(value) === null,
+    "Webhook target must be a public http(s) URL.",
+  );
 
 const alertInput = z.object({
   name: z.string().trim().min(2).max(256),
@@ -19,7 +43,7 @@ const alertInput = z.object({
   threshold: z.number(),
   comparison: z.enum(["gt", "gte", "lt", "lte"]).default("gte"),
   channel: z.enum(ALERT_CHANNELS),
-  target: z.string().trim().min(3),
+  target: webhookTargetSchema,
   enabled: z.boolean().default(true),
 });
 

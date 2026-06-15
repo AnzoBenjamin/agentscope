@@ -45,15 +45,23 @@ const HEC_TOKEN = process.env.SPLUNK_HEC_TOKEN ?? "";
  * listener. To keep local dev working without weakening verification on
  * every other outbound call (OpenAI, Anthropic, Stripe, Resend, ...),
  * we attach a dedicated `https.Agent` with `rejectUnauthorized: false`
- * that is used solely by HEC requests. The agent is only constructed
- * when the configured URL is HTTPS, and is only passed to the HEC
- * request helper below.
+ * that is used solely by HEC requests.
+ *
+ * The bypass is **disabled by default in production** and only enabled
+ * in development (or when `SPLUNK_HEC_TLS_REJECT_UNAUTHORIZED=false` is
+ * explicitly set). Production deployments should mount a real CA cert
+ * and leave verification on; the previous behavior of unconditionally
+ * bypassing TLS verification for any HTTPS HEC URL was a security gap
+ * flagged in the June 2026 code review.
  */
-const HEC_HTTPS_AGENT: https.Agent | undefined = HEC_URL.startsWith(
-  "https://",
-)
-  ? new https.Agent({ rejectUnauthorized: false })
-  : undefined;
+const HEC_TLS_BYPASS_ENABLED =
+  process.env.SPLUNK_HEC_TLS_REJECT_UNAUTHORIZED === "false" ||
+  process.env.NODE_ENV !== "production";
+
+const HEC_HTTPS_AGENT: https.Agent | undefined =
+  HEC_URL.startsWith("https://") && HEC_TLS_BYPASS_ENABLED
+    ? new https.Agent({ rejectUnauthorized: false })
+    : undefined;
 
 interface HecRequestInit {
   method: "GET" | "POST";

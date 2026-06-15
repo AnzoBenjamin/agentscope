@@ -2,7 +2,7 @@ import type { db as defaultDb } from "@agentscope/db/client";
 import type { ALERT_METRICS } from "@agentscope/db/schema";
 import { and, desc, eq, gte, inArray, sql } from "@agentscope/db";
 import { AgentRun, AlertDelivery, AlertPolicy } from "@agentscope/db/schema";
-import { createLogger } from "@agentscope/observability";
+import { createLogger, validateWebhookTarget } from "@agentscope/observability";
 import { checkSplunkHecHealth, emitStreamEvent } from "@agentscope/telemetry";
 
 const logger = createLogger("agents.alerts");
@@ -30,6 +30,16 @@ export async function evaluateRunAlerts(db: AgentScopeDb, run: AgentRunRecord) {
       value === null ||
       !matches(policy.comparison, value, policy.threshold)
     ) {
+      continue;
+    }
+
+    // Apply the same per-policy cooldown as `evaluateOperationalAlerts`.
+    // Without this, a flapping queue of 50 failed runs produces 50
+    // emails in seconds. The cooldown defaults to
+    // `AGENTSCOPE_ALERT_COOLDOWN_MS` (15 min) and is per-policy, so
+    // a `CostExceeded` policy and a `RunFailed` policy for the same
+    // org can each fire independently within the window.
+    if (await hasRecentDelivery(db, policy.id)) {
       continue;
     }
 
@@ -212,6 +222,22 @@ async function hasRecentDelivery(db: AgentScopeDb, alertPolicyId: string) {
 }
 
 async function sendWebhook(target: string, payload: Record<string, unknown>) {
+  // Defense in depth: the tRPC router validates webhook targets on
+  // policy creation/update via `validateWebhookTarget`, but the
+  // stored target could (in principle) have been written by a
+  // migration, a future internal admin tool, or a tampered DB row.
+  // Re-validate here so the worker never fetches a loopback,
+  // private, or non-http(s) URL. The same `isBlockedHostname` rules
+  // (including IPv4-mapped IPv6 like `::ffff:10.0.0.1`) are applied
+  // here as at the router, so a misconfigured target still cannot
+  // reach the cloud metadata service or an internal HTTP endpoint.
+  const error = validateWebhookTarget(target);
+  if (error) {
+    throw new Error(
+      `Refusing to send webhook to disallowed target (${error}): ${target}`,
+    );
+  }
+
   const response = await fetch(target, {
     method: "POST",
     headers: {
@@ -229,7 +255,6 @@ async function sendWebhook(target: string, payload: Record<string, unknown>) {
     throw new Error(`Webhook returned ${response.status}`);
   }
 }
-
 
 async function sendEmail(target: string, message: string) {
   const apiKey = process.env.RESEND_API_KEY;

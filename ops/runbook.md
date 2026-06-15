@@ -43,17 +43,25 @@ Domain metrics:
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `agent_runs_total` | counter | `status`, `agent_id`, `organization_id` |
-| `agent_run_duration_seconds` | histogram | `status`, `agent_id` |
+| `agent_runs_total` | counter | `status` |
+| `agent_run_duration_seconds` | histogram | `status` |
 | `outbox_events_pending` | gauge | — |
 | `outbox_events_delivered_total` | counter | `destination`, `status` |
 | `splunk_hec_send_duration_seconds` | histogram | `status` |
-| `splunk_mcp_search_duration_seconds` | histogram | `status` |
+| `splunk_mcp_search_duration_seconds` | histogram | `status`, `attempts` |
 | `rate_limit_rejections_total` | counter | `route` |
 | `tRPC_request_duration_seconds` | histogram | `path`, `ok` |
-| `scheduled_run_triggers_total` | counter | `schedule_id`, `agent_id` |
-| `cost_budget_blocked_total` | counter | `agent_id` |
-| `sse_connections` | gauge | `organization_id` |
+| `scheduled_run_triggers_total` | counter | `frequency` |
+| `cost_budget_blocked_total` | counter | `period` |
+| `sse_connections` | gauge | — |
+
+> Per-tenant breakdowns (by `agent_id`, `organization_id`, `schedule_id`,
+> etc.) are deliberately NOT exposed as metric labels to avoid Prometheus
+> cardinality explosion in a multi-tenant deployment (one time series per
+> tenant would OOM the scraper). Derive per-tenant views from logs or
+> from the Splunk side — the `agentscope:event` sourcetype has the same
+> fields with proper indexing, and the agent/session/run detail views
+> in the dashboard pull from Postgres for per-tenant lookups.
 
 Default Node.js process metrics are also exported (CPU, memory, GC, event loop lag).
 

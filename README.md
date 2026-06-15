@@ -147,8 +147,8 @@ Set at least:
 POSTGRES_URL=postgresql://agentscope:agentscope@localhost:5432/agentscope
 AUTH_SECRET=<openssl-rand-hex-32>
 OPENAI_API_KEY=<your-openai-key>
-SPLUNK_HEC_TOKEN=agentscope-hec-token-abc123
-SPLUNK_PASSWORD=agentscope123
+SPLUNK_HEC_TOKEN=<your-splunk-hec-token>
+SPLUNK_PASSWORD=<your-splunk-admin-password>
 SPLUNK_MCP_ENABLED=true
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 RESEND_API_KEY=<your-resend-key>
