@@ -25,6 +25,24 @@ type AgentScopeTx = NodePgTransaction<
 
 const logger = createLogger("agents.scheduler");
 
+/**
+ * Thrown by the scheduler tick when a schedule has `frequency = "Cron"`
+ * but no cron parser is configured. The scheduler catches this,
+ * disables the schedule, and logs a `warn` (vs the generic `error` for
+ * other failures) so operators can see *why* a schedule went
+ * inactive. A named class lets the catch block detect the condition
+ * structurally instead of by string-matching the throw message.
+ */
+class CronParserNotConfiguredError extends Error {
+  constructor(scheduleId: string) {
+    super(
+      `Schedule ${scheduleId} uses frequency=Cron but no cron parser is configured. ` +
+        `Add a cron parser (e.g. croner) and compute nextAt from schedule.cron.`,
+    );
+    this.name = "CronParserNotConfiguredError";
+  }
+}
+
 interface TriggerOptions {
   db?: AgentScopeDb;
   now?: Date;
@@ -145,10 +163,7 @@ export async function triggerDueSchedules(
       if (frequency === "Once") {
         nextAt = now;
       } else if (frequency === "Cron") {
-        throw new Error(
-          `Schedule ${schedule.id} uses frequency=Cron but no cron parser is configured. ` +
-            `Add a cron parser (e.g. croner) and compute nextAt from schedule.cron.`,
-        );
+        throw new CronParserNotConfiguredError(schedule.id);
       } else {
         nextAt = nextRunFor(frequency, now);
       }
@@ -165,6 +180,19 @@ export async function triggerDueSchedules(
       return scheduleRun;
     });
     } catch (err) {
+      // Surface a `warn` for the specific "not yet supported" case so
+      // operators can see *why* a schedule went inactive. The generic
+      // catch-all `error` log below already covers the other failure
+      // modes; this branch only handles the explicit Cron-not-yet-
+      // implemented path thrown above. Detected structurally via
+      // `instanceof` (not a string match on the error message) so the
+      // warn keeps firing even if the throw text is reworded.
+      if (err instanceof CronParserNotConfiguredError) {
+        logger.warn(
+          { scheduleId: schedule.id, frequency: schedule.frequency },
+          "Cron schedules are not yet supported; disabling until a cron parser is wired up",
+        );
+      }
       logger.error(
         {
           err,

@@ -16,7 +16,7 @@ AgentScope is the operations plane for AI employees: a control plane that queues
 - **Splunk HTTP Event Collector (HEC)** (`packages/telemetry/src/splunk.ts`): every `ModelInvoked`, `ModelCompleted`, `ToolCalled`, `ToolReturned`, `CostRecorded`, and `SessionStarted/Completed` event is forwarded to HEC into the `agentscope:event` sourcetype. The MCP search above runs against the same data.
 - **Splunk Management API / SPL** (`packages/telemetry/src/anomaly.ts`, `packages/api/src/router/splunk.ts`): the dashboard and operations page run direct SPL queries through the management API for cost-by-agent, p50/p95 model latency, and tool reliability.
 
-The data flow is end-to-end: a queued run → worker → agent runtime → telemetry package → Postgres + Splunk HEC → Splunk MCP search → risk-graded investigation report → session replay in the web UI. A schema validator, retry queue, and per-session cost guardrail keep the pipeline production-shaped. The full architecture is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [`architecture.mmd`](./architecture.mmd).
+The data flow is end-to-end: a queued run → worker → agent runtime → telemetry package → Postgres + Splunk HEC → Splunk MCP search → risk-graded investigation report → session replay in the web UI. A schema validator, retry queue, and per-session cost guardrail keep the pipeline production-shaped. The full architecture is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [`architecture_diagram.mmd`](./architecture_diagram.mmd) (with a rendered [`architecture_diagram.png`](./architecture_diagram.png)).
 
 ## Submission Track
 

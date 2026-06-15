@@ -72,16 +72,44 @@ export class ResearchAgent extends Agent {
       }
     }
 
+    // Truncate the search results and custom tool outputs to a shared
+    // per-prompt char budget before they're interpolated into the three
+    // AI prompts below. A noisy `| head 20` result plus
+    // `safeStringify(Object.fromEntries(customToolResults))` (capped at
+    // 4096) can easily push the prompt past the model's context window
+    // and 400; the structured report then becomes a generic "the model
+    // failed" stub. `PROMPT_BUDGET_CHARS` is a conservative total —
+    // the per-source slice is the budget divided by the number of
+    // sources, so the three prompts stay roughly the same size.
+    const PROMPT_BUDGET_CHARS = 12_000;
+    const searchSummary = truncateForPrompt(
+      safeStringify(searchResults),
+      PROMPT_BUDGET_CHARS / 2,
+    );
+    // `customToolResultsJson` is reused across all three prompts below;
+    // `JSON.stringify` on the full tool-output map is the expensive part,
+    // so hoist it out and only `truncateForPrompt` the resulting string
+    // for each prompt slice. `toolResultSummary` is the single shared
+    // truncated view used by all three prompts (the plan, analysis, and
+    // final report).
+    const customToolResultsJson = safeStringify(
+      Object.fromEntries(customToolResults),
+    );
+    const toolResultSummary = truncateForPrompt(
+      customToolResultsJson,
+      PROMPT_BUDGET_CHARS / 4,
+    );
+
     const plan = await this.generate(
       `Create a brief operational investigation plan for this task using the Splunk context below.
 
 Task: ${input}
 
 Splunk context:
-${JSON.stringify(searchResults, null, 2)}
+${searchSummary}
 
 Custom tool outputs:
-${safeStringify(Object.fromEntries(customToolResults))}`,
+${toolResultSummary}`,
     );
     steps.push("## Investigation Plan");
     steps.push(plan);
@@ -90,16 +118,15 @@ ${safeStringify(Object.fromEntries(customToolResults))}`,
     const analysisPrompt = `Analyze this AgentScope operational telemetry for the task "${input}" and extract the 3-5 most important reliability, cost, tool-use, and audit signals.
 
 Splunk context:
-${JSON.stringify(searchResults, null, 2)}
+${searchSummary}
 
 Custom tool outputs:
-${safeStringify(Object.fromEntries(customToolResults))}`;
+${toolResultSummary}`;
     const analysis = await this.generate(analysisPrompt);
     steps.push("## AI Analysis");
     steps.push(analysis);
     steps.push("");
 
-    const searchSummary = JSON.stringify(searchResults, null, 2);
     const reportPrompt = `Based on the Splunk telemetry, custom tool outputs, and analysis, write a production operations report for "${input}".
 
 Structure your report with:
@@ -112,7 +139,7 @@ Structure your report with:
 
 Source data:
 Splunk context: ${searchSummary}
-Custom tool outputs: ${safeStringify(Object.fromEntries(customToolResults))}`;
+Custom tool outputs: ${toolResultSummary}`;
 
     const report = await this.generate(reportPrompt);
     steps.push("## Final Report");
@@ -175,4 +202,17 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Truncate a string to a per-prompt char budget. If the string is
+ * longer than `limit`, the head is kept (most-recent rows are usually
+ * the most relevant) and a `[truncated N chars]` marker is appended so
+ * the LLM can see it didn't get the full payload and isn't being asked
+ * to summarize missing data.
+ */
+function truncateForPrompt(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const dropped = text.length - limit;
+  return `${text.slice(0, limit)}\n... [truncated ${dropped} chars]`;
 }

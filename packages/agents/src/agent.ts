@@ -29,6 +29,21 @@ interface AgentExecutionOptions {
  * Subclasses can use:
  * - `useTool()` for instrumented custom tool execution
  * - `generate()` for instrumented AI SDK model calls
+ *
+ * CONCURRENCY: instances are NOT safe to share across concurrent
+ * `execute()` calls. `_totalTokensIn`, `_totalTokensOut`,
+ * `_toolCallCount`, `_totalCost`, and `_sessionId` are per-instance
+ * mutable state that `execute()` resets to zero on entry and
+ * accumulates during the run. Two concurrent `execute()` calls on the
+ * same instance would interleave their token/cost counters and race on
+ * `_sessionId`, producing a single session that records events from two
+ * unrelated tasks. The run queue constructs a fresh
+ * `createRuntimeAgent` per claim (see `packages/agents/src/runtime.ts`),
+ * so this is safe today — but any caller that holds an `Agent`
+ * reference and runs it in parallel is on the hook. If a future feature
+ * needs concurrent runs against the same agent config, move the
+ * per-execution state into a local object inside `execute()` and pass
+ * it down to `useTool` / `generate`.
  */
 export abstract class Agent {
   readonly id: string;

@@ -20,6 +20,13 @@ RUN pnpm --filter @agentscope/nextjs... build
 
 FROM base AS runner
 ENV NODE_ENV=production
-COPY --from=build /app /app
+# Run as the unprivileged `node` user that the `node:22.21-bookworm-slim`
+# image ships with (UID 1000). The default user is root, which would let
+# a compromised Next.js process read or modify any file on the
+# container's filesystem. `--chown=node:node` ensures the copied app
+# tree is readable by the unprivileged user; `EXPOSE 3000` and `CMD`
+# then run with that user's identity.
+COPY --from=build --chown=node:node /app /app
 EXPOSE 3000
+USER node
 CMD ["pnpm", "--filter", "@agentscope/nextjs", "start"]
