@@ -8,6 +8,7 @@ import {
   OrganizationSubscription,
   ProcessedWebhookEvent,
 } from "@agentscope/db/schema";
+import { stripeWebhookEventsTotal } from "@agentscope/observability";
 
 interface StripeEvent {
   id: string;
@@ -30,48 +31,73 @@ export async function handleStripeWebhook(input: {
   payload: string;
   signature: string | null;
 }) {
-  const event = verifyStripeEvent(input.payload, input.signature);
-
-  // Idempotency / replay protection. Stripe retries any non-2xx and
-  // will deliver the same `event.id` more than once for at-least-once
-  // semantics. We record every successfully-processed event id; a
-  // duplicate insert fails the unique index, and we treat that as
-  // "already handled" and return the event to the caller so Stripe
-  // stops retrying.
   try {
-    await db.insert(ProcessedWebhookEvent).values({
-      source: WEBHOOK_SOURCE,
-      eventId: event.id,
-      eventType: event.type,
-    });
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      return { ...event, duplicate: true };
+    const event = verifyStripeEvent(input.payload, input.signature);
+
+    // Idempotency / replay protection. Stripe retries any non-2xx and
+    // will deliver the same `event.id` more than once for at-least-once
+    // semantics. We record every successfully-processed event id; a
+    // duplicate insert fails the unique index, and we treat that as
+    // "already handled" and return the event to the caller so Stripe
+    // stops retrying.
+    try {
+      await db.insert(ProcessedWebhookEvent).values({
+        source: WEBHOOK_SOURCE,
+        eventId: event.id,
+        eventType: event.type,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        stripeWebhookEventsTotal.inc({ status: "dedup" });
+        return { ...event, duplicate: true };
+      }
+      throw error;
     }
+
+    if (event.type === "checkout.session.completed") {
+      await handleCheckoutCompleted(event.data.object);
+    }
+
+    if (event.type === "customer.subscription.updated") {
+      await handleSubscriptionUpdated(event.data.object);
+    }
+
+    if (event.type === "customer.subscription.deleted") {
+      await handleSubscriptionUpdated(event.data.object, "Cancelled");
+    }
+
+    if (
+      event.type === "invoice.paid" ||
+      event.type === "invoice.payment_failed" ||
+      event.type === "invoice.finalized"
+    ) {
+      await handleInvoice(event.data.object);
+    }
+
+    stripeWebhookEventsTotal.inc({ status: "accepted" });
+    return event;
+  } catch (error) {
+    // Map every error path to a counter status so SREs can spot
+    // a replay storm (`status="dedup"`) or a bad signing secret
+    // (`status="invalid"`) without tailing logs. The original
+    // exception is re-thrown so the route handler still returns
+    // 4xx/5xx and Stripe retries as it would today.
+    const message =
+      error instanceof Error ? error.message : String(error);
+    let status: string;
+    if (/timestamp is out of tolerance/i.test(message)) {
+      status = "expired";
+    } else if (
+      /invalid stripe signature header/i.test(message) ||
+      /signature verification failed/i.test(message)
+    ) {
+      status = "invalid";
+    } else {
+      status = "error";
+    }
+    stripeWebhookEventsTotal.inc({ status });
     throw error;
   }
-
-  if (event.type === "checkout.session.completed") {
-    await handleCheckoutCompleted(event.data.object);
-  }
-
-  if (event.type === "customer.subscription.updated") {
-    await handleSubscriptionUpdated(event.data.object);
-  }
-
-  if (event.type === "customer.subscription.deleted") {
-    await handleSubscriptionUpdated(event.data.object, "Cancelled");
-  }
-
-  if (
-    event.type === "invoice.paid" ||
-    event.type === "invoice.payment_failed" ||
-    event.type === "invoice.finalized"
-  ) {
-    await handleInvoice(event.data.object);
-  }
-
-  return event;
 }
 
 function isUniqueViolation(error: unknown): boolean {

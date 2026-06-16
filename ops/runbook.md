@@ -54,6 +54,12 @@ Domain metrics:
 | `scheduled_run_triggers_total` | counter | `frequency` |
 | `cost_budget_blocked_total` | counter | `period` |
 | `sse_connections` | gauge | — |
+| `mcp_watchdog_kills_total` | counter | — |
+| `mcp_reconnects_total` | counter | — |
+| `mcp_init_failures_total` | counter | `status` (`error`, `suppressed`) |
+| `stripe_webhook_events_total` | counter | `status` (`accepted`, `dedup`, `invalid`, `expired`, `error`) |
+| `http_fetch_timeouts_total` | counter | — |
+| `db_pool_errors_total` | counter | — |
 
 > Per-tenant breakdowns (by `agent_id`, `organization_id`, `schedule_id`,
 > etc.) are deliberately NOT exposed as metric labels to avoid Prometheus
@@ -94,12 +100,47 @@ MCP health check in the UI shows `ok: false`.
 1. Confirm MCP binary: `which splunk-mcp-server` (must be on `PATH`).
 2. Run a one-shot test: `SPLUNK_MCP_ENABLED=true splunk-mcp-server --help`.
 3. Check worker logs for `mcp init failed` or `mcp search failed`.
+4. Check `mcp_init_failures_total{status="error"}` and
+   `mcp_init_failures_total{status="suppressed"}` — a sustained
+   `error` rate means the spawn is failing; a `suppressed` rate means
+   the backoff is keeping the spawn rate bounded (expected during a
+   long outage).
 
 **Fix:**
 
 1. Re-run `./scripts/splunk-mcp-setup.sh` to reinstall the MCP server.
 2. Verify `SPLUNK_MCP_COMMAND`, `SPLUNK_URL`, and auth env vars in `.env`.
 3. Restart the worker; the MCP client reconnects on next call.
+4. After the next successful `tools/list`, `mcp_reconnects_total` should
+   tick up exactly once. If it doesn't, the client never left the
+   failure streak.
+
+### MCP child process wedged (watchdog kill)
+
+**Symptom:** `mcp_watchdog_kills_total` increasing.
+`mcp.heartbeatHistory` on the dashboard shows the last sample with
+`error: "mcp server idle for 60000ms; killed"`.
+
+**Check:**
+
+1. `getMcpStatus()` from the worker `/healthz` endpoint — the
+   `heartbeatHistory` ring buffer shows whether kills are clustered
+   (Splunk indexer unreachable) or isolated (a single bad request).
+2. Splunk side: is the management API returning 5xx? The MCP server
+   wedges most often when Splunk accepts the TCP connection but never
+   replies to a search.
+
+**Fix:**
+
+1. The watchdog is the protection, not the bug. After a kill the next
+   heartbeat (≤ 30s) spawns a fresh `splunk-mcp-server` child.
+2. If kills cluster around a specific time window, check Splunk's
+   indexer health at that window: `index=_internal source=*splunkd*`
+   for errors.
+3. To temporarily silence the watchdog while debugging, set
+   `SPLUNK_MCP_ENABLED=false` in `.env` and restart the worker. The
+   investigator will fall back to the direct search path
+   (slower, but functional).
 
 ### Outbox backlog growing
 
@@ -111,6 +152,11 @@ absent from Splunk search.
 1. `pnpm db:studio` — open the `telemetry_outbox` table.
 2. Look at `status` and `lastError` columns.
 3. `RUNS` per minute vs `delivered` per minute in the metrics panel.
+4. `db_pool_errors_total` — a non-zero rate here means the pool is
+   dropping idle clients, usually because Postgres was bounced or
+   `max_connections` was hit. The pool self-heals (the bad client is
+   removed and a fresh one is opened on the next query), but a
+   sustained rate means the upstream is unhealthy.
 
 **Fix:**
 
@@ -120,6 +166,10 @@ absent from Splunk search.
    exponentially (5s, 10s, 20s, ..., capped at 10 minutes).
 3. To force a redrain: `pnpm --filter @agentscope/workers dev` (worker picks
    up pending rows on next poll).
+4. If `db_pool_errors_total` is climbing, check
+   `select count(*) from pg_stat_activity` — if it is near
+   `max_connections`, raise `AGENTSCOPE_DB_POOL_MAX` (or shrink the
+   worker fleet).
 
 ### Worker reaper stuck
 
@@ -185,6 +235,91 @@ any organization.
 1. This is a tamper alert. Investigate DB access logs for that org.
 2. If the mismatch is a known false positive (e.g. backfill), document
    the cause and add a new compliance note.
+
+### Stripe webhook replay storm
+
+**Symptom:** `stripe_webhook_events_total{status="dedup"}` rate
+climbing; `status="accepted"` rate stays flat. Stripe Dashboard shows
+retries in flight.
+
+**Check:**
+
+1. The `processed_webhook_event` table is the source of truth — every
+   row is one event id we have already handled. A growing table under
+   sustained `dedup` pressure means Stripe is re-sending the same
+   event id because our 2xx acknowledgement was lost in transit.
+2. The Next.js API logs for `Stripe signature verification failed`
+   alongside `stripe_webhook_events_total{status="invalid"}` — a
+   rising `invalid` rate means the signing secret was rotated without
+   updating `STRIPE_WEBHOOK_SECRET` in our env.
+
+**Fix:**
+
+1. The dedup is the protection, not the bug. `dedup` events return 2xx
+   to Stripe so the retries will stop on their own.
+2. If `status="invalid"` is climbing, rotate `STRIPE_WEBHOOK_SECRET` to
+   match the new value in the Stripe Dashboard (or the previous
+   one if rotating back). Stripe's SDK supports two secrets in
+   parallel during rotation — set both and the verifier will accept
+   either.
+3. If `status="expired"` is climbing, our clock is drifting from
+   Stripe's. Confirm NTP is configured on the API host
+   (`chronyc tracking` or `ntpq -p`).
+
+### HTTP tool timeouts
+
+**Symptom:** `http_fetch_timeouts_total` rate climbing. Eval runs
+report `HTTP tool timed out after 30000ms: <url>` in the tool
+result envelope.
+
+**Check:**
+
+1. The URL in the timeout message is the offender — `pnpm --filter
+   @agentscope/api exec node -e "fetch('<url>')"` to confirm the
+   upstream is slow.
+2. Per-tool timeout overrides: a Custom tool can set
+   `config.timeoutMs` in its definition (1s..10m clamp). The
+   counter ticks at the same rate regardless of the override.
+
+**Fix:**
+
+1. For a one-off slow upstream, raise `config.timeoutMs` on the
+   specific tool definition (Admin → Tools).
+2. For a platform-wide issue (e.g. a network partition), the
+   30s default bounds the blast radius per tool call; a stuck
+   agent run will still hit the cost budget after a few
+   iterations.
+3. The counter is informational — no action required for a
+   small rate. Alert on `rate(http_fetch_timeouts_total[15m])
+   > 10` for sustained trouble.
+
+### Worker graceful shutdown
+
+**Symptom:** Pods stuck in `Terminating` longer than
+`terminationGracePeriodSeconds` (default 30s); Kubernetes sends
+SIGKILL and the worker exits with no graceful drain.
+
+**Check:**
+
+1. Worker logs for `shutdown timed out; forcing exit` — this is the
+   hard ceiling firing at `AGENTSCOPE_SHUTDOWN_TIMEOUT_MS` (default
+   25s). The cap is intentionally a few seconds shorter than the
+   Kubernetes grace period so we close the DB pool and disconnect
+   the MCP child before SIGKILL.
+2. `currentRunPromise` may be stuck on an LLM provider that is
+   itself hung. Check the LLM provider's status page.
+
+**Fix:**
+
+1. The hard cap is the protection, not the bug. After SIGKILL the
+   stale `AgentRun` row will be reaped by
+   `reapStaleAgentRuns` on the next worker pod.
+2. To raise the cap (e.g. for an LLM provider known to be slow),
+   set `AGENTSCOPE_SHUTDOWN_TIMEOUT_MS=55000` and
+   `terminationGracePeriodSeconds: 60` on the worker Deployment.
+3. The metrics server is closed at the start of shutdown, so
+   Kubernetes will see the worker as unhealthy immediately and stop
+   routing new work to it.
 
 ## Health checks
 

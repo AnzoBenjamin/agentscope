@@ -4,7 +4,7 @@ import {
   AgentToolDefinition,
   AgentToolGrant,
 } from "@agentscope/db/schema";
-import { createLogger } from "@agentscope/observability";
+import { createLogger, httpFetchTimeoutsTotal } from "@agentscope/observability";
 import { mcpSearch } from "@agentscope/telemetry";
 
 import type { AgentTool } from "./types";
@@ -283,12 +283,24 @@ async function runHttpFetch(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // `AbortSignal.timeout()` rejects with a `TimeoutError` whose name is
-    // `"TimeoutError"`. Surface a stable string the eval runner can
-    // assert on, and include the URL so debug logs identify the offender.
+    // `AbortSignal.timeout()` rejects with a `DOMException` whose name
+    // is `"TimeoutError"`. Node's fetch honors the abort and rethrows
+    // with that same `name`. We deliberately do NOT match on a regex
+    // against the message string — a network reset can also say
+    // "aborted", and we don't want to mis-tick the counter for
+    // non-timeout aborts. `error.name === "TimeoutError"` is the
+    // narrow, correct predicate for "this fetch was cancelled because
+    // its AbortSignal timed out".
     const isTimeout =
-      error instanceof Error &&
-      (error.name === "TimeoutError" || /aborted|timeout/i.test(message));
+      error instanceof Error && error.name === "TimeoutError";
+    if (isTimeout) {
+      // Counter increments on every timeout, before we return the
+      // error envelope, so SREs alerting on
+      // `rate(http_fetch_timeouts_total[5m])` see the slow upstream
+      // immediately rather than waiting for the per-tenant logs to
+      // roll up.
+      httpFetchTimeoutsTotal.inc();
+    }
     return {
       error: isTimeout
         ? `HTTP tool timed out after ${requestedTimeout}ms: ${url}`

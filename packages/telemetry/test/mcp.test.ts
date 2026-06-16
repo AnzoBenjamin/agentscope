@@ -66,6 +66,59 @@ void test(
   },
 );
 
+void test(
+  "initSplunkMcp increments mcp_init_failures_total{status=\"error\"} and {status=\"suppressed\"} on consecutive failures",
+  async () => {
+    // Same setup as the backoff-suppression test above: a binary that
+    // does not exist on PATH so `spawn` fails. Two consecutive calls
+    // exercise the error-then-suppressed counter pair.
+    process.env.SPLUNK_MCP_ENABLED = "true";
+    process.env.SPLUNK_MCP_COMMAND = "definitely-not-on-path-xyz";
+    process.env.SPLUNK_URL = "https://localhost:8089";
+    process.env.SPLUNK_TOKEN = "test-token";
+    process.env.SPLUNK_PASSWORD = "";
+
+    const bust = Math.random();
+    const { initSplunkMcp, __resetMcpForTesting } = await import(
+      `../src/mcp?bust=${bust}`
+    );
+    const { mcpInitFailuresTotal } = await import(
+      "@agentscope/observability"
+    );
+    __resetMcpForTesting();
+
+    const before = await mcpInitFailuresTotal.get();
+    const errorBefore =
+      before.values.find((m) => m.labels.status === "error")?.value ?? 0;
+    const suppressedBefore =
+      before.values.find((m) => m.labels.status === "suppressed")?.value ??
+      0;
+
+    // First call: the spawn fails, recordInitFailure() fires, and the
+    // counter ticks under {status="error"}.
+    await initSplunkMcp();
+    // Second call: the backoff window is now active, so the spawn
+    // never even tries — the counter ticks under {status="suppressed"}.
+    await initSplunkMcp();
+
+    const after = await mcpInitFailuresTotal.get();
+    const errorAfter =
+      after.values.find((m) => m.labels.status === "error")?.value ?? 0;
+    const suppressedAfter =
+      after.values.find((m) => m.labels.status === "suppressed")?.value ??
+      0;
+
+    assert.ok(
+      errorAfter >= errorBefore + 1,
+      `expected mcp_init_failures_total{status="error"} to tick by >=1, got before=${errorBefore} after=${errorAfter}`,
+    );
+    assert.ok(
+      suppressedAfter >= suppressedBefore + 1,
+      `expected mcp_init_failures_total{status="suppressed"} to tick by >=1, got before=${suppressedBefore} after=${suppressedAfter}`,
+    );
+  },
+);
+
 void test("mcpHeartbeat records a sample and updates lastHeartbeatAt", async () => {
   const bust = Math.random();
   const { mcpHeartbeat, getMcpStatus, __resetMcpForTesting } = await import(

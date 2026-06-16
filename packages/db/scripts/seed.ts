@@ -13,7 +13,11 @@ const ORG_ID = "00000000-0000-0000-0000-000000000001";
 async function seed() {
   console.log("Seeding AgentScope demo data...\n");
 
-  // Clean existing data
+  // Clean existing data. Order matters: child rows before parents
+  // (no CASCADE on the schema). `ProcessedWebhookEvent` is included so
+  // a re-seed on a DB that previously received real Stripe events
+  // doesn't leave orphaned dedup rows; idempotent seed runs are the
+  // whole point of this script.
   await db.delete(schema.Event);
   await db.delete(schema.Cost);
   await db.delete(schema.AgentRun);
@@ -21,6 +25,7 @@ async function seed() {
   await db.delete(schema.Agent);
   await db.delete(schema.OrganizationInvite);
   await db.delete(schema.OrganizationMember);
+  await db.delete(schema.ProcessedWebhookEvent);
   await db.delete(schema.Organization);
 
   await db.insert(schema.Organization).values({

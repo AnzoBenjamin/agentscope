@@ -1,6 +1,8 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+import { dbPoolErrorsTotal } from "@agentscope/observability";
+
 import * as schema from "./schema";
 
 /**
@@ -66,11 +68,16 @@ const pool = new Pool({
 // to the failing client; without a listener Node's default handler
 // throws and the process dies.
 pool.on("error", (err) => {
-  // Use stderr via console here: importing a logger would pull in the
-  // observability package at module load and risk a circular import
-  // with the tRPC server. This handler should be rare (network blips,
-  // DBA-restarted Postgres), so console is the right level of
-  // observability.
+  // `dbPoolErrorsTotal` is a plain `prom-client` Counter object — safe
+  // to import at module load (no side effects beyond construction) and
+  // incremented here on every idle-client error so SREs alerting on
+  // `rate(db_pool_errors_total[5m])` see a DBA-initiated Postgres
+  // restart or a `max_connections` exhaustion event without having to
+  // tail the console.
+  dbPoolErrorsTotal.inc();
+  // Keep the stderr log for forensic detail (stack trace, connection
+  // id from `pg`); operators triaging a metric alert need the raw
+  // error to distinguish a network blip from a permanent failure.
   console.error(
     "[db.pool] idle client errored and was removed from the pool",
     err,
@@ -91,4 +98,16 @@ export const db = drizzle({
  */
 export async function closeDb(): Promise<void> {
   await pool.end();
+}
+
+/**
+ * Test-only escape hatch. Returns the underlying `pg.Pool` so unit
+ * tests can inspect the constructed options (e.g. assert that
+ * `AGENTSCOPE_DB_POOL_MAX=5` actually produced a `max: 5` pool) and
+ * the number of `error` listeners the constructor registered.
+ * Marked with a double-underscore prefix to discourage production
+ * use — callers should depend on `db` / `closeDb` instead.
+ */
+export function __getPoolForTesting(): Pool {
+  return pool;
 }

@@ -24,7 +24,12 @@
 
 import type { ChildProcess } from "node:child_process";
 
-import { createLogger } from "@agentscope/observability";
+import {
+  createLogger,
+  mcpInitFailuresTotal,
+  mcpReconnectsTotal,
+  mcpWatchdogKillsTotal,
+} from "@agentscope/observability";
 
 const logger = createLogger("telemetry.mcp");
 
@@ -198,6 +203,12 @@ class McpClient {
         { killIdleMs: McpClient.KILL_IDLE_MS },
         "mcp server idle; sending SIGKILL",
       );
+      // Counter increments here, not in the `exit` handler, so a SIGKILL
+      // that triggers a normal exit (code 0 from the kill signal) still
+      // counts as a watchdog kill rather than a clean shutdown. SREs
+      // alerting on `rate(mcp_watchdog_kills_total[5m])` see the real
+      // signal without false negatives.
+      mcpWatchdogKillsTotal.inc();
       status.lastError = `mcp server idle for ${McpClient.KILL_IDLE_MS}ms; killed`;
       // `kill()` is async-safe; the `exit` handler will fire shortly
       // after and reset module-level state.
@@ -410,6 +421,12 @@ function backoffDelayMs(failures: number): number {
 }
 
 function recordInitSuccess(): void {
+  // Only count a reconnect if we were in a failure streak. Counting
+  // every successful init would inflate the metric on every fresh
+  // worker boot, drowning the real "I recovered from an outage" signal.
+  if (consecutiveInitFailures > 0) {
+    mcpReconnectsTotal.inc();
+  }
   consecutiveInitFailures = 0;
   nextReconnectAllowedAt = 0;
 }
@@ -417,6 +434,7 @@ function recordInitSuccess(): void {
 function recordInitFailure(): void {
   consecutiveInitFailures += 1;
   nextReconnectAllowedAt = Date.now() + backoffDelayMs(consecutiveInitFailures);
+  mcpInitFailuresTotal.inc({ status: "error" });
 }
 
 /**
@@ -446,6 +464,10 @@ export async function initSplunkMcp(): Promise<void> {
   // log.
   if (Date.now() < nextReconnectAllowedAt) {
     status.lastError = `mcp reconnect suppressed (backoff)`;
+    // Count the suppressed attempt so SREs see the full request rate
+    // (attempts = error + suppressed) in metrics, not just the
+    // attempts that actually tried to spawn a child.
+    mcpInitFailuresTotal.inc({ status: "suppressed" });
     return;
   }
 

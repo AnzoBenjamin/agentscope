@@ -133,6 +133,86 @@ export const sseConnections = new Gauge({
   registers: [],
 });
 
+// --- Production-readiness protections (added with the hardening commit) ---
+
+/**
+ * Increments every time the Splunk MCP watchdog kills a hung child
+ * process (no JSON-RPC response for `McpClient.KILL_IDLE_MS`). A
+ * non-zero rate is a strong signal that the Splunk indexer is
+ * unreachable or that the MCP server itself is wedged.
+ */
+export const mcpWatchdogKillsTotal = new Counter({
+  name: "mcp_watchdog_kills_total",
+  help: "Splunk MCP child processes killed by the idle watchdog",
+  registers: [],
+});
+
+/**
+ * Increments every time the MCP client successfully reconnects after
+ * a prior failure. Pair with `mcp_init_failures_total` to derive
+ * availability.
+ */
+export const mcpReconnectsTotal = new Counter({
+  name: "mcp_reconnects_total",
+  help: "Splunk MCP client reconnects after a prior failure",
+  registers: [],
+});
+
+/**
+ * Increments every time `initSplunkMcp` fails to reach a healthy
+ * state (spawn ENOENT, `initialize` error, `tools/list` error).
+ * Includes re-spawn attempts suppressed by the backoff window
+ * (status: `suppressed`) so SREs can see the full picture in metrics
+ * without tailing logs.
+ */
+export const mcpInitFailuresTotal = new Counter({
+  name: "mcp_init_failures_total",
+  help: "Splunk MCP init attempts that failed, by status",
+  labelNames: ["status"] as const,
+  registers: [],
+});
+
+/**
+ * Counts every Stripe webhook event the API receives, by terminal
+ * outcome. Useful for spotting a replay storm (`status="dedup"`) or a
+ * bad signing secret (`status="invalid"`).
+ *
+ *   accepted - first time we saw this event id; business logic ran
+ *   dedup    - event id was already in processed_webhook_event
+ *   invalid - signature verification failed (bad sig, no header)
+ *   expired  - signature timestamp outside STRIPE_TIMESTAMP_TOLERANCE_SECONDS
+ *   error    - downstream handler threw (likely a transient DB fault)
+ */
+export const stripeWebhookEventsTotal = new Counter({
+  name: "stripe_webhook_events_total",
+  help: "Stripe webhook events received, by terminal outcome",
+  labelNames: ["status"] as const,
+  registers: [],
+});
+
+/**
+ * Counts HTTP tool fetches that hit their `AbortSignal.timeout`
+ * ceiling. A non-zero rate from one tenant usually means a slow
+ * upstream or a runaway loop in a custom tool.
+ */
+export const httpFetchTimeoutsTotal = new Counter({
+  name: "http_fetch_timeouts_total",
+  help: "HTTP tool fetches that hit their timeout",
+  registers: [],
+});
+
+/**
+ * Counts idle `pg.Pool` client errors (server-initiated disconnects,
+ * TCP resets). The pool removes the bad client and continues; if this
+ * counter is climbing, the upstream Postgres is rejecting connections
+ * (DBA restart, network partition, `max_connections` exhaustion).
+ */
+export const dbPoolErrorsTotal = new Counter({
+  name: "db_pool_errors_total",
+  help: "Idle pg.Pool client errors (the pool removed the bad client)",
+  registers: [],
+});
+
 /**
  * Register all AgentScope metrics into the shared registry.
  * Idempotent.
@@ -151,6 +231,12 @@ export function registerAllMetrics(): void {
     scheduledRunTriggersTotal,
     costBudgetBlockedTotal,
     sseConnections,
+    mcpWatchdogKillsTotal,
+    mcpReconnectsTotal,
+    mcpInitFailuresTotal,
+    stripeWebhookEventsTotal,
+    httpFetchTimeoutsTotal,
+    dbPoolErrorsTotal,
   ];
   for (const metric of metricList) {
     try {

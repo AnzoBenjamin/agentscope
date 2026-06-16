@@ -22,6 +22,12 @@ export {
   scheduledRunTriggersTotal,
   costBudgetBlockedTotal,
   sseConnections,
+  mcpWatchdogKillsTotal,
+  mcpReconnectsTotal,
+  mcpInitFailuresTotal,
+  stripeWebhookEventsTotal,
+  httpFetchTimeoutsTotal,
+  dbPoolErrorsTotal,
 } from "./metrics";
 export { withTrpcMetrics, recordHttpRequestDuration } from "./middleware";
 export {
