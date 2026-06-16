@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Socket } from "node:net";
 import test from "node:test";
 
 import {
@@ -185,6 +186,53 @@ void test("buildGrantedTool returns a tool that swallows handler errors", async 
     "expected an error envelope with a non-empty `error` string",
   );
 });
+
+void test(
+  "runCustomHandler http_get aborts after the configured timeout",
+  async () => {
+    // Listen on a server that never responds, then set a 100ms
+    // timeout. The fetch should reject and the tool should return
+    // an error envelope that mentions the timeout, not hang forever.
+    const { createServer } = await import("node:net");
+    const sockets: Socket[] = [];
+    const server = createServer((socket) => {
+      sockets.push(socket);
+      // Deliberately never write a response.
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      throw new Error("expected numeric port");
+    }
+
+    try {
+      const out = (await runCustomHandler({
+        toolName: "slow-http",
+        config: {
+          handler: "http_get",
+          url: `http://127.0.0.1:${address.port}/hang`,
+          timeoutMs: 100,
+        },
+        input: undefined,
+      })) as { error?: string };
+
+      assert.ok(
+        typeof out.error === "string" && out.error.length > 0,
+        "expected a timeout error envelope",
+      );
+      assert.ok(
+        /timed out|abort/i.test(out.error ?? ""),
+        `expected timeout error message, got: ${out.error}`,
+      );
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1466,6 +1466,35 @@ export const StreamEvent = pgTable(
   ],
 );
 
+// ----- Webhook event dedup ----------------------------------------------
+//
+// Stripe (and any future provider) webhooks can be delivered more than
+// once for the same logical event. To prevent re-applying side effects
+// (double-charging an invoice, double-creating a subscription) we record
+// every successfully processed event id in this table and short-circuit
+// duplicates. The unique index on `event_id` is the dedup boundary; the
+// route handler attempts the insert first and treats a unique-violation
+// as "already processed" (a 200 to Stripe, no side effects). The
+// `source` column lets us support multiple providers without
+// cross-contaminating event ids.
+export const ProcessedWebhookEvent = pgTable(
+  "processed_webhook_event",
+  (t) => ({
+    id: t.uuid().notNull().primaryKey().defaultRandom(),
+    source: t.varchar({ length: 32 }).notNull(),
+    eventId: t.varchar({ length: 128 }).notNull(),
+    eventType: t.varchar({ length: 64 }).notNull(),
+    processedAt: t.timestamp().defaultNow().notNull(),
+  }),
+  (table) => [
+    uniqueIndex("processed_webhook_event_source_event_unique").on(
+      table.source,
+      table.eventId,
+    ),
+    index("processed_webhook_event_processed_at_idx").on(table.processedAt),
+  ],
+);
+
 export const CreateAgentCostBudgetSchema = createInsertSchema(
   AgentCostBudget,
   {

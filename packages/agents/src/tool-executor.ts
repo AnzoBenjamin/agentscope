@@ -253,11 +253,27 @@ async function runHttpFetch(
   const url = typeof config.url === "string" ? config.url : "";
   if (!url) return { error: "Custom HTTP tool requires `config.url`." };
   const headers = isPlainObject(config.headers) ? config.headers : {};
+  // Default 30s is the same ceiling used by `packages/telemetry/splunk.ts`
+  // for outbound HEC calls — keeps the blast radius of a slow upstream
+  // bounded across the platform. Operators can override per-tool via
+  // `config.timeoutMs` (integer milliseconds, 1s..10m). Without an
+  // explicit abort signal, `fetch()` in Node has no timeout and will
+  // happily hang for the OS-default TCP keepalive (often 2h+), which
+  // would pin a worker slot forever.
+  const requestedTimeout =
+    typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs)
+      ? Math.min(Math.max(config.timeoutMs, 1_000), 10 * 60_000)
+      : 30_000;
+  // Use `AbortSignal.timeout` (Node 17.3+) so the signal is a real
+  // DOM-spec `AbortSignal` — `fetch()` honors it for both DNS and the
+  // response stream, and rejects with a `TimeoutError` we can catch.
+  const signal = AbortSignal.timeout(requestedTimeout);
   try {
     const response = await fetch(url, {
       method: body === undefined ? "GET" : "POST",
       headers: headers as Record<string, string>,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
     const text = await response.text();
     return {
@@ -267,7 +283,17 @@ async function runHttpFetch(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { error: `HTTP tool failed: ${message}` };
+    // `AbortSignal.timeout()` rejects with a `TimeoutError` whose name is
+    // `"TimeoutError"`. Surface a stable string the eval runner can
+    // assert on, and include the URL so debug logs identify the offender.
+    const isTimeout =
+      error instanceof Error &&
+      (error.name === "TimeoutError" || /aborted|timeout/i.test(message));
+    return {
+      error: isTimeout
+        ? `HTTP tool timed out after ${requestedTimeout}ms: ${url}`
+        : `HTTP tool failed: ${message}`,
+    };
   }
 }
 

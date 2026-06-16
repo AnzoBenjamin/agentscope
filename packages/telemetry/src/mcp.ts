@@ -141,6 +141,22 @@ class McpClient {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
+  // Watchdog timer that force-kills a hung child process. The
+  // `sendRequest` timeout (15s) only rejects the caller; it does not
+  // kill the underlying `splunk-mcp-server` process. If the child
+  // wedges (e.g. Splunk accepting the connection but never replying),
+  // every subsequent request would queue indefinitely. We
+  // (re)arm this timer on every successful response and on every
+  // stdin write; if no message comes back within `KILL_IDLE_MS`,
+  // we tear the child down so the next heartbeat reconnects.
+  private idleTimer: NodeJS.Timeout | null = null;
+  private static readonly KILL_IDLE_MS = 60_000;
+  /**
+   * Grace period between SIGTERM and SIGKILL on `disconnect()`. Short
+   * enough that worker shutdown stays bounded; long enough that a
+   * well-behaved MCP server can flush and exit.
+   */
+  private static readonly SIGTERM_GRACE_MS = 5_000;
 
   private constructor(proc: ChildProcess) {
     this.process = proc;
@@ -155,6 +171,7 @@ class McpClient {
     });
 
     this.process.on("exit", (code: number | null) => {
+      this.clearIdleTimer();
       if (code !== 0) {
         logger.warn({ code }, "mcp server exited");
         status.lastError = `mcp server exited with code ${code}`;
@@ -168,9 +185,49 @@ class McpClient {
     });
   }
 
+  /**
+   * Arm the kill timer. Resets any prior timer so back-to-back
+   * responses don't extend the watchdog indefinitely. When the timer
+   * fires the child is SIGKILL'd; the `exit` handler above will then
+   * clear state and the next heartbeat will spawn a fresh process.
+   */
+  private armIdleTimer(): void {
+    this.clearIdleTimer();
+    this.idleTimer = setTimeout(() => {
+      logger.warn(
+        { killIdleMs: McpClient.KILL_IDLE_MS },
+        "mcp server idle; sending SIGKILL",
+      );
+      status.lastError = `mcp server idle for ${McpClient.KILL_IDLE_MS}ms; killed`;
+      // `kill()` is async-safe; the `exit` handler will fire shortly
+      // after and reset module-level state.
+      try {
+        this.process.kill("SIGKILL");
+      } catch (error) {
+        logger.warn({ err: error }, "mcp server SIGKILL threw");
+      }
+    }, McpClient.KILL_IDLE_MS);
+    // Don't keep the event loop alive just for the watchdog; the
+    // child process holds a ref of its own.
+    this.idleTimer.unref();
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
   /** Create a connected McpClient. Returns null on failure. */
   static async create(): Promise<McpClient | null> {
     const { spawn } = await import("node:child_process");
+    // `stdio: ['ignore', 'pipe', 'pipe']` keeps stdin closed (the MCP
+    // server never reads from it for our use cases) which means a
+    // child that tries to read from stdin gets an EOF immediately
+    // instead of blocking forever. We still write to stdin below for
+    // the request/response cycle, but we also install a SIGTERM
+    // watchdog so a wedged child can be reaped on shutdown.
     const proc = spawn(SPLUNK_MCP_COMMAND, [], {
       env: {
         ...process.env,
@@ -215,6 +272,13 @@ class McpClient {
           } else {
             p.resolve(msg.result);
           }
+          // A response arrived. Re-arm the idle watchdog so the next
+          // 60s window starts now — otherwise an in-flight request
+          // that resolves at t=59s would still trip the SIGKILL at
+          // t=60s. With a 30s heartbeat cadence this is a no-op in
+          // practice, but it makes the watchdog correct for any
+          // caller.
+          this.armIdleTimer();
         }
       } catch {
         // Ignore non-JSON lines
@@ -233,6 +297,13 @@ class McpClient {
       method,
       params,
     });
+
+    // Reset the kill timer when we start a new request — a child that
+    // has been silent for 60s gets SIGKILL'd (see `armIdleTimer`). The
+    // request-level timeout below is the soft deadline: it rejects
+    // the caller; the kill timer is the hard deadline: it tears the
+    // child down so the next heartbeat reconnects.
+    this.armIdleTimer();
 
     const promise = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -290,8 +361,62 @@ class McpClient {
   }
 
   disconnect(): void {
-    this.process.kill();
+    this.clearIdleTimer();
+    // Send SIGTERM first; if the child doesn't exit within
+    // `SIGTERM_GRACE_MS`, escalate to SIGKILL so a wedged MCP server
+    // can't block worker shutdown forever. `kill()` is async-safe and
+    // idempotent for an already-exited process.
+    try {
+      this.process.kill("SIGTERM");
+    } catch (error) {
+      logger.warn({ err: error }, "mcp process SIGTERM threw on disconnect");
+    }
+    const proc = this.process;
+    const exitTimer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch (error) {
+        logger.warn({ err: error }, "mcp process SIGKILL threw on disconnect");
+      }
+    }, McpClient.SIGTERM_GRACE_MS);
+    exitTimer.unref();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reconnect backoff
+// ---------------------------------------------------------------------------
+//
+// A flapping MCP server (Splunk restarting, network blips, bad
+// credentials) used to thrash the worker: every `mcpHeartbeat()` call
+// from the 30s loop would try to `spawn` a new `splunk-mcp-server`
+// process, which would fail, and the cycle would repeat — burning CPU
+// and flooding the log. The backoff state below caps the spawn rate
+// after consecutive failures with a simple exponential schedule
+// (1s → 2s → 4s → 8s → 16s → 30s ceiling), reset on the first
+// successful `tools/list` round-trip.
+
+let consecutiveInitFailures = 0;
+let nextReconnectAllowedAt = 0;
+const RECONNECT_BACKOFF_STEPS_MS = [
+  1_000, 2_000, 4_000, 8_000, 16_000, 30_000,
+];
+
+function backoffDelayMs(failures: number): number {
+  const step = RECONNECT_BACKOFF_STEPS_MS[
+    Math.min(failures, RECONNECT_BACKOFF_STEPS_MS.length - 1)
+  ];
+  return step ?? 30_000;
+}
+
+function recordInitSuccess(): void {
+  consecutiveInitFailures = 0;
+  nextReconnectAllowedAt = 0;
+}
+
+function recordInitFailure(): void {
+  consecutiveInitFailures += 1;
+  nextReconnectAllowedAt = Date.now() + backoffDelayMs(consecutiveInitFailures);
 }
 
 /**
@@ -315,12 +440,21 @@ export async function initSplunkMcp(): Promise<void> {
     logger.debug("SPLUNK_URL or auth not set - MCP disabled");
     return;
   }
+  // Honor the reconnect backoff window. The worker's 30s heartbeat
+  // loop calls `initSplunkMcp` whenever the client is missing; without
+  // this gate every tick would re-spawn a doomed child and flood the
+  // log.
+  if (Date.now() < nextReconnectAllowedAt) {
+    status.lastError = `mcp reconnect suppressed (backoff)`;
+    return;
+  }
 
   try {
     mcpClient = await McpClient.create();
     if (!mcpClient) {
       status.lastError = "McpClient.create() returned null";
       logger.error("failed to create mcp client");
+      recordInitFailure();
       recordHeartbeat({
         at: new Date().toISOString(),
         ok: false,
@@ -338,6 +472,7 @@ export async function initSplunkMcp(): Promise<void> {
     status.lastConnectedAt = new Date().toISOString();
     status.lastError = null;
     status.tools = tools.map((t) => t.name);
+    recordInitSuccess();
 
     // The initial `tools/list` round-trip counts as a "first heartbeat"
     // for visualization — the dashboard's sparkline will be populated
@@ -360,13 +495,17 @@ export async function initSplunkMcp(): Promise<void> {
       error instanceof Error ? error.message : String(error);
     mcpClient = null;
     mcpEnabled = false;
+    recordInitFailure();
     recordHeartbeat({
       at: new Date().toISOString(),
       ok: false,
       error: status.lastError,
       durationMs: 0,
     });
-    logger.error({ err: error }, "mcp init failed");
+    logger.error(
+      { err: error, nextRetryMs: backoffDelayMs(consecutiveInitFailures) },
+      "mcp init failed",
+    );
   }
 }
 
@@ -378,7 +517,33 @@ export function isMcpEnabled(): boolean {
  * Tear down the MCP child process. Called on worker shutdown so the
  * splunk-mcp-server child doesn't become an orphan when the parent
  * exits. Safe to call when MCP was never initialized.
+ *
+ * Test-only escape hatch: `__resetMcpForTesting()` clears the
+ * module-level state (client, backoff counters, ring buffer) so each
+ * test starts from a clean slate. Marked with a double-underscore
+ * prefix to discourage production use.
  */
+export function __resetMcpForTesting(): void {
+  if (mcpClient) {
+    try {
+      mcpClient.disconnect();
+    } catch {
+      // ignore
+    }
+  }
+  mcpClient = null;
+  mcpEnabled = false;
+  status.connected = false;
+  status.clientPresent = false;
+  status.lastConnectedAt = null;
+  status.lastHeartbeatAt = null;
+  status.lastError = null;
+  status.tools = [];
+  heartbeatHistory.length = 0;
+  consecutiveInitFailures = 0;
+  nextReconnectAllowedAt = 0;
+}
+
 export function disconnectSplunkMcp(): void {
   if (!mcpClient) return;
   try {

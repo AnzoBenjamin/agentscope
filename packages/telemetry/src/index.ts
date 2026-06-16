@@ -252,6 +252,8 @@ export {
 } from "./outbox";
 export type { OutboxHealthSnapshot } from "./outbox";
 export {
+  __resetMcpForTesting,
+  disconnectSplunkMcp,
   getMcpStatus,
   initSplunkMcp,
   isMcpEnabled,

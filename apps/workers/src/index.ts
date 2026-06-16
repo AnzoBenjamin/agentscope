@@ -6,7 +6,7 @@ import {
   reapStaleAgentRuns,
   triggerDueSchedules,
 } from "@agentscope/agents";
-import { db } from "@agentscope/db/client";
+import { closeDb, db } from "@agentscope/db/client";
 import {
   createLogger,
   initMetrics,
@@ -14,6 +14,7 @@ import {
   serializeMetrics,
 } from "@agentscope/observability";
 import {
+  disconnectSplunkMcp,
   getMcpStatus,
   getTelemetryOutboxHealth,
   initOpenTelemetry,
@@ -54,6 +55,26 @@ const workerId =
   process.env.AGENTSCOPE_WORKER_ID ?? `agentscope-worker-${process.pid}`;
 
 let shuttingDown = false;
+let shutdownResolve: (() => void) | null = null;
+/**
+ * Tracks the in-flight `executeNextAgentRun` call so the shutdown
+ * handler can wait for it to drain before exiting. Without this, a
+ * SIGTERM mid-run would interrupt the LLM call (potentially
+ * mid-stream) and orphan the `AgentRun` row in `Running` status until
+ * the next reaper tick picks it up. We also track the iteration
+ * promise for the main loop so `await shutdownCompleted` doesn't race
+ * a pending `sleep(pollMs)`.
+ *
+ * The promise is typed to the actual return type of
+ * `executeNextAgentRun` (an `AgentRun` summary or `null` when the
+ * queue is empty) so the `run.id` / `run.status` accesses in the
+ * completion log compile without `unknown` or `any` casts.
+ */
+type AgentRunResult = Awaited<ReturnType<typeof executeNextAgentRun>>;
+let currentRunPromise: Promise<AgentRunResult> = Promise.resolve(
+  null as AgentRunResult,
+);
+let currentLoopPromise: Promise<unknown> = Promise.resolve();
 let nextOperationalAlertCheckAt = 0;
 let nextTelemetryOutboxCheckAt = 0;
 let nextTelemetryOutboxReapAt = 0;
@@ -113,7 +134,7 @@ logger.info(
   "workers started; polling queued agent runs",
 );
 
-void (async () => {
+currentLoopPromise = (async () => {
   while (!shuttingDown) {
     try {
       if (Date.now() >= nextScheduleCheckAt) {
@@ -168,7 +189,19 @@ void (async () => {
         });
       }
 
-      const run = await executeNextAgentRun({ workerId });
+      // Track the in-flight run so the shutdown handler can await it.
+      // `executeNextAgentRun` resolves to the run summary on completion
+      // (or to null when the queue is empty); either way the await
+      // blocks the loop iteration until the LLM stream finishes.
+      currentRunPromise = executeNextAgentRun({ workerId });
+
+      const run = await currentRunPromise;
+      // Reset to a settled null-promise so the shutdown handler
+      // awaiting `currentRunPromise` doesn't see the in-flight run
+      // twice. Typed cast keeps the `Promise<AgentRunResult>` invariant
+      // (the variable was widened to `Promise<AgentRunRecord | null>`
+      // after the explicit return-type fix on `executeNextAgentRun`).
+      currentRunPromise = Promise.resolve(null as AgentRunResult);
 
       if (run) {
         logger.info(
@@ -182,22 +215,98 @@ void (async () => {
         { err: error },
         "agent run processing failed",
       );
+      // Same null-promise reset as the success path: the previous
+      // run-promise was either fulfilled (and replaced above) or it
+      // rejected (and we just logged the error). Either way, the
+      // shutdown drain should not see a stale handle.
+      currentRunPromise = Promise.resolve(null as AgentRunResult);
     }
 
+    // Cooperative sleep: bail out immediately on shutdown so we don't
+    // wait `pollMs` (5s by default) before the graceful-exit path runs.
+    if (shuttingDown) break;
     await sleep(pollMs);
   }
 
   logger.info({ workerId }, "workers stopped");
-  process.exit(0);
+  // The `let` is assigned by the `shutdown()` handler in a separate
+  // function scope; TypeScript's control-flow analysis can narrow
+  // `shutdownResolve` to `null` (its initial value) when the loop
+  // exits without seeing the assignment. The cast preserves the
+  // `(() => void) | null` invariant so `?.()` stays valid.
+  (shutdownResolve as (() => void) | null)?.();
 })();
+
+/**
+ * Hard ceiling for the graceful-shutdown window. Kubernetes sends
+ * SIGTERM, then SIGKILLs the container after `terminationGracePeriod`
+ * (default 30s); the in-process cap is a few seconds shorter so we
+ * have a chance to close the DB pool and disconnect the MCP child
+ * before the kernel reaps us. Bump via `AGENTSCOPE_SHUTDOWN_TIMEOUT_MS`
+ * for slower environments.
+ */
+const SHUTDOWN_TIMEOUT_MS = Number(
+  process.env.AGENTSCOPE_SHUTDOWN_TIMEOUT_MS ?? 25_000,
+);
 
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  // Drain the metrics server so in-flight /healthz probes (the dashboard)
-  // can finish before the process exits. `server.close()` is async and
-  // resolves once all keep-alive connections are closed.
+  logger.info(
+    { workerId, timeoutMs: SHUTDOWN_TIMEOUT_MS },
+    "shutdown signal received; draining",
+  );
+  // Stop accepting new /metrics and /healthz probes. The dashboard will
+  // start showing the worker as unhealthy, which is the correct signal
+  // to operators that the worker is going down. `server.close()` is
+  // async and resolves once all keep-alive connections are closed, so
+  // we schedule the `await` after the loop exits.
   metricsServer?.close();
+
+  // Hard timeout: if the current run or the loop never finishes (e.g.
+  // an LLM provider that hangs forever), we still want to exit before
+  // SIGKILL. `process.exit` is sync so the timers below are best-effort.
+  const forceExit = setTimeout(() => {
+    logger.fatal(
+      { timeoutMs: SHUTDOWN_TIMEOUT_MS },
+      "shutdown timed out; forcing exit",
+    );
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forceExit.unref();
+
+  // Drain the run loop + any in-flight agent run, then release all
+  // external handles. Each step is independently best-effort — we
+  // want to attempt DB + MCP teardown even if the loop throws.
+  void (async () => {
+    const shutdownCompleted = new Promise<void>((resolve) => {
+      shutdownResolve = resolve;
+    });
+    try {
+      await currentLoopPromise;
+      await currentRunPromise;
+    } catch (error) {
+      logger.warn({ err: error }, "shutdown drain threw");
+    }
+    try {
+      await closeDb();
+    } catch (error) {
+      logger.warn({ err: error }, "closeDb threw during shutdown");
+    }
+    try {
+      disconnectSplunkMcp();
+    } catch (error) {
+      logger.warn({ err: error }, "disconnectSplunkMcp threw during shutdown");
+    }
+    try {
+      await shutdownCompleted;
+    } catch {
+      // already resolved
+    }
+    clearTimeout(forceExit);
+    logger.info({ workerId }, "workers stopped");
+    process.exit(0);
+  })();
 }
 
 function sleep(ms: number) {

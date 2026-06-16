@@ -39,7 +39,9 @@ interface ExecuteOptions {
   workerId?: string;
 }
 
-export async function executeNextAgentRun(options: ExecuteOptions = {}) {
+export async function executeNextAgentRun(
+  options: ExecuteOptions = {},
+): Promise<AgentRunRecord | null> {
   const db = options.db ?? defaultDb;
   const workerId = options.workerId ?? defaultWorkerId();
   const run = await claimNextAgentRun(db, workerId);
@@ -52,7 +54,7 @@ export async function executeNextAgentRun(options: ExecuteOptions = {}) {
 export async function executeAgentRunById(
   runId: string,
   options: ExecuteOptions = {},
-) {
+): Promise<AgentRunRecord | null> {
   const db = options.db ?? defaultDb;
   const workerId = options.workerId ?? defaultWorkerId();
   const run = await claimAgentRunById(db, runId, workerId);
