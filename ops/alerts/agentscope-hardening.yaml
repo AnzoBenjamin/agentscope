@@ -1,0 +1,211 @@
+groups:
+  - name: agentscope.hardening
+    interval: 30s
+    rules:
+      # ---------------------------------------------------------------------
+      # MCP (Splunk Model Context Protocol) server
+      # ---------------------------------------------------------------------
+
+      - alert: AgentScopeMCPWatchdogKill
+        expr: increase(mcp_watchdog_kills_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: page
+          component: telemetry.mcp
+        annotations:
+          summary: "MCP idle-watchdog SIGKILLed a hung splunk-mcp-server child"
+          description: |
+            The 60s idle watchdog in packages/telemetry/src/mcp.ts detected
+            no JSON-RPC response activity from splunk-mcp-server and SIGKILLed
+            the process. A reconnect attempt will follow on the next
+            heartbeat. Repeated kills indicate the MCP server is wedged
+            (likely a blocking Splunk call) and needs investigation.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#mcp-watchdog-kills"
+
+      - alert: AgentScopeMCPInitFailureStorm
+        expr: |
+          sum by () (rate(mcp_init_failures_total{status="error"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: page
+          component: telemetry.mcp
+        annotations:
+          summary: "MCP init failures sustained above 0.1/s for 5 minutes"
+          description: |
+            splunk-mcp-server has failed to initialize (spawn ENOENT, init
+            timeout, auth rejection, etc.) at a sustained rate. Investigators
+            and the dashboard "MCP-enabled" badge are degraded; alerting
+            downstream of MCP search is unreliable.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#mcp-init-failure-storm"
+
+      - alert: AgentScopeMCPReconnectStorm
+        expr: increase(mcp_reconnects_total[15m]) > 5
+        for: 0m
+        labels:
+          severity: warn
+          component: telemetry.mcp
+        annotations:
+          summary: "MCP server flapping: >5 reconnects in 15 minutes"
+          description: |
+            The reconnect backoff has been cleared by successful inits
+            five or more times in the last 15 minutes. The Splunk MCP
+            server is flapping (likely a crash loop, or a peer that
+            accepts the TCP connection but fails the JSON-RPC handshake).
+            Check `mcp_init_failures_total{status="error"}` for the root
+            cause.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#mcp-reconnect-storm"
+
+      - alert: AgentScopeMCPInitSuppressed
+        expr: |
+          sum by () (rate(mcp_init_failures_total{status="suppressed"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warn
+          component: telemetry.mcp
+        annotations:
+          summary: "MCP backoff gate is suppressing most init attempts"
+          description: |
+            The exponential backoff (1s -> 30s) is keeping most re-spawn
+            attempts from even hitting the spawn syscall. This is
+            self-protective: the worker is NOT hammering Splunk. But
+            sustained suppression for 10+ minutes means the underlying
+            init failure is not recovering on its own.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#mcp-reconnect-storm"
+
+      # ---------------------------------------------------------------------
+      # Stripe webhook
+      # ---------------------------------------------------------------------
+
+      - alert: AgentScopeStripeWebhookErrorSpike
+        expr: |
+          sum by () (increase(stripe_webhook_events_total{status="error"}[5m])) > 5
+        for: 0m
+        labels:
+          severity: page
+          component: billing.stripe
+        annotations:
+          summary: "Stripe webhook handler returning 5xx — Stripe will start retrying"
+          description: |
+            The `handleStripeWebhook` handler is throwing on more than 5
+            events in 5 minutes. Stripe treats 5xx as a transient failure
+            and will retry; check the API logs for the thrown error
+            (the public response is intentionally generic, the real
+            message is server-side).
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#stripe-webhook-errors"
+
+      - alert: AgentScopeStripeWebhookDedupSpike
+        expr: |
+          sum by () (rate(stripe_webhook_events_total{status="dedup"}[5m])) > 0.5
+        for: 15m
+        labels:
+          severity: warn
+          component: billing.stripe
+        annotations:
+          summary: "Stripe webhook dedup rate elevated"
+          description: |
+            The `processed_webhook_event.event_id` dedup table is catching
+            more than 0.5 events/s for 15+ minutes. This means Stripe
+            is retrying aggressively — usually because the handler is
+            returning 5xx intermittently. Check
+            `stripe_webhook_events_total{status="error"}` for the
+            primary cause.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#stripe-webhook-dedup"
+
+      - alert: AgentScopeStripeWebhookInvalidSignature
+        expr: |
+          sum by () (increase(stripe_webhook_events_total{status="invalid"}[10m])) > 20
+        for: 0m
+        labels:
+          severity: warn
+          component: billing.stripe
+        annotations:
+          summary: "Stripe webhook signature failures spiking"
+          description: |
+            More than 20 signature-verification rejections in 10 minutes.
+            Likely causes: a stale `STRIPE_WEBHOOK_SECRET` after a Stripe
+            dashboard rotation, or a misconfigured proxy stripping
+            the `Stripe-Signature` header. Verify the secret matches
+            Stripe's dashboard for the current endpoint.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#stripe-webhook-invalid-signature"
+
+      # ---------------------------------------------------------------------
+      # HTTP fetch (Custom agent tool)
+      # ---------------------------------------------------------------------
+
+      - alert: AgentScopeHTTPFetchTimeouts
+        expr: rate(http_fetch_timeouts_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warn
+          component: agents.tool-executor
+        annotations:
+          summary: "HTTP fetch timeouts sustained above 0.5/s for 5 minutes"
+          description: |
+            The runHttpFetch AbortSignal is firing on more than 0.5
+            requests/s for 5 minutes. The default 30s ceiling is too
+            short for the agents currently calling out, or a third
+            party is degraded. Check per-tool breakdown via the
+            existing `tool` label and consider raising
+            `AGENTSCOPE_HTTP_FETCH_TIMEOUT_MS` or the per-tool
+            `timeoutMs` in the tool grant config.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#http-fetch-timeouts"
+
+      # ---------------------------------------------------------------------
+      # DB connection pool
+      # ---------------------------------------------------------------------
+
+      - alert: AgentScopeDBPoolErrors
+        expr: increase(db_pool_errors_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warn
+          component: db.postgres
+        annotations:
+          summary: "Postgres pool error listener fired"
+          description: |
+            The pg pool `error` listener in packages/db/src/client.ts
+            caught an error from a pooled connection. Likely causes:
+            network blip, Postgres restart, or a connection that
+            exceeded `maxLifetimeSeconds` while in use. The pool
+            re-establishes on next checkout, but a sustained rate
+            indicates infrastructure trouble.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#db-pool-errors"
+
+      # ---------------------------------------------------------------------
+      # Worker process health
+      # ---------------------------------------------------------------------
+
+      - alert: AgentScopeWorkerDown
+        expr: up{job=~"agentscope-workers?"} == 0
+        for: 2m
+        labels:
+          severity: page
+          component: workers
+        annotations:
+          summary: "AgentScope worker is down"
+          description: |
+            Prometheus has not been able to scrape the worker's /metrics
+            endpoint for 2 minutes. The worker is either crashed, OOM
+            killed, or the prometheus scrape config lost the target.
+            Check the worker's container/process and
+            `WORKER_METRICS_URL` reachability from the API.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#worker-down"
+
+      - alert: AgentScopeWorkerShutdownTimeout
+        expr: |
+          increase(worker_shutdown_timeouts_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: page
+          component: workers
+        annotations:
+          summary: "Worker exceeded SHUTDOWN_TIMEOUT_MS (25s default)"
+          description: |
+            apps/workers/src/index.ts was forced to terminate the
+            in-flight run because the 25s shutdown ceiling elapsed.
+            The agent run was abandoned mid-execution; downstream
+            queues may still be holding a reference. Inspect the
+            worker logs for the run id, and consider raising
+            `AGENTSCOPE_SHUTDOWN_TIMEOUT_MS` if the run was almost
+            done.
+          runbook_url: "https://github.com/AnzoBenjamin/agentscope/blob/main/ops/runbook.md#worker-shutdown-timeout"

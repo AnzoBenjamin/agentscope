@@ -28,6 +28,7 @@ export {
   stripeWebhookEventsTotal,
   httpFetchTimeoutsTotal,
   dbPoolErrorsTotal,
+  workerShutdownTimeoutsTotal,
 } from "./metrics";
 export { withTrpcMetrics, recordHttpRequestDuration } from "./middleware";
 export {

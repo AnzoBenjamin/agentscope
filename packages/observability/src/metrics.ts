@@ -214,6 +214,23 @@ export const dbPoolErrorsTotal = new Counter({
 });
 
 /**
+ * Increments when the worker's graceful-shutdown hard ceiling
+ * (`AGENTSCOPE_SHUTDOWN_TIMEOUT_MS`, default 25s) elapses before the
+ * in-flight run and the run loop drain. A non-zero rate means
+ * Kubernetes is about to SIGKILL the container while an agent run
+ * is still mid-execution — the run is abandoned and the outbox
+ * will re-queue it on the next worker boot, but the partial output
+ * is lost. Pair with `mcp_watchdog_kills_total` and the worker
+ * `/healthz` probe to distinguish a slow LLM provider from a
+ * genuinely hung child process.
+ */
+export const workerShutdownTimeoutsTotal = new Counter({
+  name: "worker_shutdown_timeouts_total",
+  help: "Worker shutdowns that hit SHUTDOWN_TIMEOUT_MS and forced exit(1)",
+  registers: [],
+});
+
+/**
  * Register all AgentScope metrics into the shared registry.
  * Idempotent.
  */
@@ -237,6 +254,7 @@ export function registerAllMetrics(): void {
     stripeWebhookEventsTotal,
     httpFetchTimeoutsTotal,
     dbPoolErrorsTotal,
+    workerShutdownTimeoutsTotal,
   ];
   for (const metric of metricList) {
     try {

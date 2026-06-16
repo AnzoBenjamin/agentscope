@@ -12,6 +12,7 @@ import {
   initMetrics,
   registerAllMetrics,
   serializeMetrics,
+  workerShutdownTimeoutsTotal,
 } from "@agentscope/observability";
 import {
   disconnectSplunkMcp,
@@ -267,6 +268,7 @@ function shutdown() {
   // an LLM provider that hangs forever), we still want to exit before
   // SIGKILL. `process.exit` is sync so the timers below are best-effort.
   const forceExit = setTimeout(() => {
+    workerShutdownTimeoutsTotal.inc();
     logger.fatal(
       { timeoutMs: SHUTDOWN_TIMEOUT_MS },
       "shutdown timed out; forcing exit",

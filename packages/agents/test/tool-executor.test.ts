@@ -54,25 +54,25 @@ void test("loadGrantedTools returns one AgentTool per grant with merged config",
 });
 
 void test(
-  "buildGrantedTool merges schema + grant config (grant wins on conflict)",
+  "buildGrantedTool produces a callable tool that echoes its input",
   async () => {
-    // We test `buildGrantedTool` directly (rather than
-    // `loadGrantedTools`) because the merge is internal to the tool
-    // builder and the built tool's `execute` closure is the only
-    // observable side. With a `Custom` + `echo` tool we can compare
-    // the input echo against a value that depends on which branch
-    // of the merge won: the schema has `note: "from-schema"` and
-    // the grant overrides with `note: "from-grant"`. The echo
-    // handler returns `input` verbatim, so we put the merged config
-    // into the input and assert the grant's value won.
+    // The merge between `definition.configSchema` and `grant.config`
+    // is internal to the tool builder and only observable through
+    // the built tool's `execute` closure. A `Custom` + `echo` tool
+    // returns its `input` verbatim, so the only invariant we can
+    // assert from the outside is: the tool builds, executes without
+    // throwing, and the echo round-trips the input. The actual merge
+    // precedence is covered indirectly by the tool-executor
+    // integration tests in packages/api (where a real handler sees
+    // the merged config in its closure).
     const definition = {
       id: "t1",
       organizationId: "org-1",
       name: "merge-tool",
       displayName: "Merge",
       scope: "Custom",
-      description: "Echoes a key from the merged config",
-      configSchema: { handler: "echo", note: "from-schema" },
+      description: "Echoes its input",
+      configSchema: { handler: "echo" },
       enabled: true,
       createdByUserId: null,
       createdAt: new Date(),
@@ -94,18 +94,8 @@ void test(
       organizationId: "org-1",
     });
 
-    // The merged config is opaque to the caller; verify it indirectly
-    // by injecting a `note` into the input via a different mechanism
-    // and asserting the echo returns the value from the *grant*
-    // config (the merge precedence). We do this by re-using
-    // `buildGrantedTool` with a different config combination and
-    // asserting the input echo reflects the grant.
     const echoedInput = { task: "noop" };
     const result = (await tool.execute(echoedInput)) as { task: string };
-    // The echo handler is `(input) => input`, so the result should
-    // be the input verbatim. The merged config is reachable only
-    // through the closure, but the test above proved the tool
-    // builds and executes without throwing.
     assert.deepEqual(result, echoedInput);
   },
 );

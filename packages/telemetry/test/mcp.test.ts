@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// `node:test`'s top-level `test.before`/`test.after` are suite-level
+// hooks that do NOT fire when called outside a `suite()` block, so
+// they would silently no-op here. The `bust=` query string on the
+// dynamic `import()` below is the real mechanism that gives each
+// test a fresh module load with the env vars it sets; the `delete`
+// lines inside each test body are the safety net for sibling tests
+// in the same file. `node:test` runs each test file in a fresh
+// worker by default, so env-var pollution across files is not a
+// concern in practice.
+
 void test(
   "mcpSearch fails closed when Splunk MCP is not connected",
   async () => {
